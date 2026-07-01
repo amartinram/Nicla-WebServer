@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings — StepCounter</title>
+  <style>
+    :root { --bg:#ffffff; --card:#ffffff; --border:#e2e8f0; --muted:#64748b; --text:#0f172a; --accent:#2563eb; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--text); }
+    header { padding:24px 32px; border-bottom:1px solid var(--border); }
+    a.back { color:var(--muted); text-decoration:none; font-size:13px; }
+    h1 { margin:8px 0 0; font-size:22px; }
+    main { padding:24px 32px; max-width:640px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:20px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .card h2 { margin:0 0 4px; font-size:15px; }
+    .card p.desc { margin:0 0 18px; color:var(--muted); font-size:13px; }
+    label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+    input { width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--border);
+            background:#ffffff; color:var(--text); font-size:14px; }
+    .row { display:flex; gap:14px; } .row > div { flex:1; }
+    button { margin-top:18px; padding:10px 16px; border:0; border-radius:8px;
+             background:var(--accent); color:#ffffff; font-weight:700; font-size:14px; cursor:pointer; }
+    button.secondary { background:#f1f5f9; color:var(--text); border:1px solid var(--border); }
+    .flash { background:rgba(22,163,74,.12); color:#16a34a; padding:10px 14px;
+             border-radius:8px; font-size:13px; margin-bottom:18px; }
+    .hint { color:var(--muted); font-size:12px; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="back" href="/">&larr; Dashboard</a> · <a class="back" href="/logout">Sign out</a>
+    <h1>⚙️ Settings</h1>
+  </header>
+  <main>
+    {% with messages = get_flashed_messages() %}
+      {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+    {% endwith %}
+
+    <form method="post" action="/settings">
+      <div class="card">
+        <h2>Email alerts</h2>
+        <p class="desc">When a patient FAILS (no data) or activity is low, an email is sent here.</p>
+
+        <label for="alert_to">Send alerts to (doctor's email)</label>
+        <input id="alert_to" name="alert_to" type="email" value="{{ cfg.alert_to }}" placeholder="doctor@hospital.org">
+
+        <label for="alert_from">From address (optional)</label>
+        <input id="alert_from" name="alert_from" type="email" value="{{ cfg.alert_from }}" placeholder="alerts@yourdomain.org">
+      </div>
+
+      <div class="card">
+        <h2>Mail server (SMTP)</h2>
+        <p class="desc">Any SMTP provider works — e.g. Brevo, SendGrid, your hospital's mail server.</p>
+        <div class="row">
+          <div>
+            <label for="smtp_host">SMTP host</label>
+            <input id="smtp_host" name="smtp_host" value="{{ cfg.smtp_host }}" placeholder="smtp-relay.brevo.com">
+          </div>
+          <div style="max-width:120px">
+            <label for="smtp_port">Port</label>
+            <input id="smtp_port" name="smtp_port" value="{{ cfg.smtp_port }}" placeholder="587">
+          </div>
+        </div>
+        <label for="smtp_user">SMTP username</label>
+        <input id="smtp_user" name="smtp_user" value="{{ cfg.smtp_user }}" autocomplete="off">
+        <label for="smtp_pass">SMTP password / key</label>
+        <input id="smtp_pass" name="smtp_pass" type="password" autocomplete="new-password"
+               placeholder="{{ '•••••••• (leave blank to keep)' if has_pass else 'enter password / API key' }}">
+        <div class="hint">Stored on the server only; never shown back in the page.</div>
+      </div>
+
+      <div class="card">
+        <h2>Alert thresholds</h2>
+        <div class="row">
+          <div>
+            <label for="silent_hours">FAIL after no data for (hours)</label>
+            <input id="silent_hours" name="silent_hours" value="{{ cfg.silent_hours }}">
+          </div>
+          <div>
+            <label for="battery_min">Low-battery threshold (%)</label>
+            <input id="battery_min" name="battery_min" value="{{ cfg.battery_min }}">
+          </div>
+        </div>
+        <div class="hint">The daily-step threshold is set per patient on each patient's page.</div>
+      </div>
+
+      <button type="submit">Save settings</button>
+    </form>
+
+    <form method="post" action="/settings/test" style="display:inline">
+      <button type="submit" class="secondary">Send test email</button>
+    </form>
+
+    <form method="post" action="/settings/labels">
+      <div class="card" style="margin-top:20px">
+        <h2>Patient labels (MAC &rarr; name)</h2>
+        <p class="desc">Give each device that has sent data a friendly label shown on the
+          dashboard (e.g. <b>User1</b>). The MAC address stays visible inside each patient's
+          page. Leave blank to just show the MAC. <b>Keep labels non-identifying</b> (no real
+          names) to preserve pseudonymisation.</p>
+        {% if devices %}
+          {% for d in devices %}
+          <label for="label_{{ d.device_id }}" style="word-break:break-all">{{ d.device_id }}</label>
+          <input id="label_{{ d.device_id }}" name="label_{{ d.device_id }}"
+                 value="{{ d.label }}" placeholder="e.g. User{{ loop.index }}" autocomplete="off">
+          {% endfor %}
+          <button type="submit">Save labels</button>
+        {% else %}
+          <p class="hint">No devices have sent data yet.</p>
+        {% endif %}
+      </div>
+    </form>
+  </main>
+</body>
+</html>

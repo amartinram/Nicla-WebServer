@@ -1,0 +1,8 @@
+[start] gunicorn up on 127.0.0.1:8000 (log: gunicorn.log)
+[start] tunnel attempt 1 — waiting for URL...
+
+======================================================================
+ Dashboard : https://las-beta-heated-morrison.trycloudflare.com
+ App URL   : https://las-beta-heated-morrison.trycloudflare.com/data?token=TBwbq3JOy4-0YXL2BVLQGOTUAIuxNmLG
+ Login     : user 'doctor'  password: step-4c00f9ad
+======================================================================

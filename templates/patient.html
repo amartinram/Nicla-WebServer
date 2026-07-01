@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ device_id }} — StepCounter</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    :root { --bg:#ffffff; --card:#ffffff; --border:#e2e8f0; --ok:#16a34a; --alert:#dc2626;
+            --muted:#64748b; --text:#0f172a; --accent:#2563eb; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--text); }
+    header { padding:24px 32px; border-bottom:1px solid var(--border); }
+    a.back { color:var(--muted); text-decoration:none; font-size:13px; }
+    h1 { margin:8px 0 0; font-size:22px; word-break:break-all; }
+    .pill { font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; }
+    .pill.OK { background:rgba(22,163,74,.12); color:var(--ok); }
+    .pill.ALERT { background:rgba(220,38,38,.12); color:var(--alert); }
+    main { padding:24px 32px; }
+    .stats { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
+    .stat { background:var(--card); border:1px solid var(--border); border-radius:12px;
+            padding:16px 20px; min-width:150px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .stat .v { font-size:26px; font-weight:700; }
+    .stat .k { color:var(--muted); font-size:13px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px;
+            padding:20px; margin-bottom:24px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .card h2 { margin:0 0 14px; font-size:15px; font-weight:600; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="back" href="/">&larr; All patients</a> ·
+    <a class="back" href="/patient/{{ device_id }}/config">⚙ Settings</a> ·
+    <a class="back" href="/logout">Sign out</a>
+    <h1>{{ label }}
+      {% if me %}<span class="pill {{ me.status }}">{{ me.status }}</span>{% endif %}
+    </h1>
+    <div style="color:var(--muted);font-size:13px;margin-top:4px;word-break:break-all">MAC: {{ device_id }}</div>
+  </header>
+  <main>
+    {% with messages = get_flashed_messages() %}
+      {% for m in messages %}<p style="background:rgba(22,163,74,.12);color:var(--ok);padding:8px 12px;border-radius:8px;font-size:13px">{{ m }}</p>{% endfor %}
+    {% endwith %}
+    <div class="stats">
+      <div class="stat"><div class="v" id="stat-steps">–</div><div class="k">steps · <span id="stat-day">selected day</span></div></div>
+      <div class="stat"><div class="v" id="stat-cadence">–</div><div class="k">avg cadence (steps/min, active)</div></div>
+      <div class="stat"><div class="v" id="stat-active">–</div><div class="k">active minutes</div></div>
+      {% if me %}<div class="stat"><div class="v">{{ me.hours_ago }} h</div><div class="k">since last report</div></div>{% endif %}
+      {% if me %}<div class="stat"><div class="v">{% if me.battery is not none %}{{ me.battery }}%{% else %}—{% endif %}</div><div class="k">battery</div></div>{% endif %}
+    </div>
+
+    {% if me %}
+    <p style="color:var(--muted);font-size:13px">
+      Alert thresholds — steps/day: <b>{{ me.min_steps }}</b> ·
+      cadence: <b>{% if me.min_cadence %}{{ me.min_cadence }}{% else %}off{% endif %}</b> ·
+      active min: <b>{% if me.min_minutes %}{{ me.min_minutes }}{% else %}off{% endif %}</b> ·
+      <a href="/patient/{{ device_id }}/config" style="color:var(--accent)">edit in ⚙ Settings</a>
+    </p>
+    {% endif %}
+
+    <div class="card">
+      <h2>Daily steps <span style="color:var(--muted);font-weight:400;font-size:12px">(click any day to see its cadence)</span></h2>
+      <canvas id="dailyChart" height="90"></canvas>
+    </div>
+
+    <div class="card">
+      <h2 id="cadenceTitle">Cadence (steps per minute)</h2>
+      <canvas id="minuteChart" height="90"></canvas>
+    </div>
+
+    <form method="post" action="/patient/{{ device_id }}/delete"
+          onsubmit="return confirm('Delete ALL data for {{ device_id }}? This cannot be undone (GDPR erasure).');">
+      <button type="submit" style="background:rgba(220,38,38,.10);color:var(--alert);border:1px solid var(--alert);
+              padding:9px 14px;border-radius:8px;font-size:13px;cursor:pointer">
+        Delete all data for this device (GDPR erasure)
+      </button>
+    </form>
+  </main>
+
+  <script>
+    const dailyLabels  = {{ daily_labels | tojson }};
+    const dailySteps   = {{ daily_steps | tojson }};
+    const dailyMinutes = {{ daily_minutes | tojson }};   // one per-minute array per day
+    let   selectedDay  = dailyMinutes.length - 1;         // default = latest day
+
+    const GRID = 'rgba(15,23,42,.08)', TICK = '#64748b';
+
+    // x label = time of day for each minute (index 0 = 00:00).
+    const timeLabelsFor = (arr) => arr.map((_, i) => {
+      const h = Math.floor(i / 60), m = i % 60;
+      return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+    });
+
+    // metrics for one day's per-minute array
+    const dayMetrics = (arr) => {
+      const active = arr.filter(v => v > 0);
+      const cadence = active.length ? Math.round(active.reduce((a, b) => a + b, 0) / active.length * 10) / 10 : 0;
+      return { cadence, active: active.length };
+    };
+
+    const dailyChart = new Chart(document.getElementById('dailyChart'), {
+      type: 'bar',
+      data: { labels: dailyLabels,
+              datasets: [{ label: 'Steps', data: dailySteps, backgroundColor: '#93c5fd' }] },
+      options: { onClick: (evt) => {
+                   // 'index'/intersect:false => any day is clickable, even 0-step (0-height) days
+                   const pts = dailyChart.getElementsAtEventForMode(evt, 'index', {intersect:false}, true);
+                   if (pts.length) showDay(pts[0].index);
+                 },
+                 plugins:{legend:{display:false}},
+                 scales:{ x:{ticks:{color:TICK}, grid:{color:GRID}},
+                          y:{ticks:{color:TICK}, grid:{color:GRID}} } }
+    });
+
+    const minuteChart = new Chart(document.getElementById('minuteChart'), {
+      type: 'line',
+      data: { labels: timeLabelsFor(dailyMinutes[selectedDay] || []),
+              datasets: [{ label:'steps/min', data: dailyMinutes[selectedDay] || [],
+                           borderColor:'#16a34a', borderWidth:1.5, pointRadius:0,
+                           pointHoverRadius:4, pointHoverBackgroundColor:'#16a34a', tension:0.2 }] },
+      options: { interaction:{mode:'index', intersect:false},   // hover anywhere on the line
+                 plugins:{legend:{display:false},
+                          tooltip:{callbacks:{
+                            title:(items)=> items[0].label,               // time of day HH:MM
+                            label:(ctx)=> ctx.parsed.y + ' steps/min'}}},
+                 scales:{ x:{title:{display:true,text:'hour of day',color:TICK},
+                             ticks:{color:TICK,autoSkip:false,maxRotation:0,
+                                    callback:(val,index)=> index % 60 === 0 ? (index/60)+'h' : ''},
+                             grid:{color:GRID}},
+                          y:{ticks:{color:TICK}, grid:{color:GRID}} } }
+    });
+
+    function showDay(i) {
+      selectedDay = i;
+      const arr = dailyMinutes[i] || [];
+      // cadence chart
+      minuteChart.data.labels = timeLabelsFor(arr);
+      minuteChart.data.datasets[0].data = arr;
+      minuteChart.update();
+      document.getElementById('cadenceTitle').textContent =
+        'Cadence on ' + dailyLabels[i] + ' (steps per minute)';
+      // stats row -> this day's data
+      const m = dayMetrics(arr);
+      document.getElementById('stat-steps').textContent = dailySteps[i];
+      document.getElementById('stat-cadence').textContent = m.cadence;
+      document.getElementById('stat-active').textContent = m.active;
+      document.getElementById('stat-day').textContent = dailyLabels[i];
+      // highlight the selected bar
+      dailyChart.data.datasets[0].backgroundColor =
+        dailySteps.map((_, j) => j === i ? '#2563eb' : '#93c5fd');
+      dailyChart.update();
+    }
+
+    showDay(selectedDay);   // initialise stats + title + highlight (defaults to latest day)
+  </script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings — {{ device_id }}</title>
+  <style>
+    :root { --bg:#ffffff; --card:#ffffff; --border:#e2e8f0; --muted:#64748b; --text:#0f172a; --accent:#2563eb; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--text); }
+    header { padding:24px 32px; border-bottom:1px solid var(--border); }
+    a.back { color:var(--muted); text-decoration:none; font-size:13px; }
+    h1 { margin:8px 0 0; font-size:20px; word-break:break-all; }
+    main { padding:24px 32px; max-width:620px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:20px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .card h2 { margin:0 0 4px; font-size:15px; }
+    .card p.desc { margin:0 0 18px; color:var(--muted); font-size:13px; }
+    label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+    input { width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--border);
+            background:#ffffff; color:var(--text); font-size:14px; }
+    .hint { color:var(--muted); font-size:12px; margin-top:6px; }
+    button { margin-top:18px; padding:10px 16px; border:0; border-radius:8px;
+             background:var(--accent); color:#ffffff; font-weight:700; font-size:14px; cursor:pointer; }
+    .flash { background:rgba(22,163,74,.12); color:#16a34a; padding:10px 14px;
+             border-radius:8px; font-size:13px; margin-bottom:18px; }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="back" href="/patient/{{ device_id }}">&larr; Back to visualization</a> ·
+    <a class="back" href="/">All patients</a> ·
+    <a class="back" href="/logout">Sign out</a>
+    <h1>⚙️ Settings — {{ device_id }}</h1>
+  </header>
+  <main>
+    {% with messages = get_flashed_messages() %}
+      {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+    {% endwith %}
+
+    <form method="post" action="/patient/{{ device_id }}/config">
+      <div class="card">
+        <h2>Activity thresholds for this patient</h2>
+        <p class="desc">An alert (and email) is raised when the latest day falls below any of
+          these. Set a value to <b>0</b> to disable that metric.</p>
+
+        <label for="min_steps">Minimum steps per day</label>
+        <input id="min_steps" name="min_steps" type="number" min="0" step="1" value="{{ cfg.min_steps }}">
+        <div class="hint">Total steps on the day — raises a LOW alert if below.</div>
+
+        <label for="min_cadence">Minimum cadence (steps per active minute)</label>
+        <input id="min_cadence" name="min_cadence" type="number" min="0" step="0.1" value="{{ cfg.min_cadence }}">
+        <div class="hint">Average steps/min over the minutes the patient was walking.</div>
+
+        <label for="min_minutes">Minimum active minutes per day</label>
+        <input id="min_minutes" name="min_minutes" type="number" min="0" step="1" value="{{ cfg.min_minutes }}">
+        <div class="hint">Number of minutes in the day with any walking recorded.</div>
+      </div>
+
+      <button type="submit">Save thresholds</button>
+    </form>
+  </main>
+</body>
+</html>

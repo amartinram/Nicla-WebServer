@@ -1,0 +1,33 @@
+# Render Blueprint — deploy with: New > Blueprint, pointed at this repo.
+# Region eu (Frankfurt) keeps data in the EU for GDPR. Free plan.
+services:
+  - type: web
+    name: stepcounter
+    runtime: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 4 --bind 0.0.0.0:$PORT --timeout 60
+    healthCheckPath: /login
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true          # random session key
+      - key: INGEST_TOKEN
+        generateValue: true          # paste into the app's SERVER_URL as ?token=...
+      - key: DOCTOR_USER
+        value: doctor
+      - key: DOCTOR_PASSWORD_HASH
+        sync: false                  # set manually (see README: generate_hash.py)
+      - key: FORCE_HTTPS
+        value: "1"
+      - key: ALERT_MIN_STEPS
+        value: "1000"               # placeholder — set from a clinical baseline
+      # Optional email alerts:
+      # - key: SMTP_HOST
+      #   sync: false
+      # - key: SMTP_USER
+      #   sync: false
+      # - key: SMTP_PASS
+      #   sync: false
+      # - key: ALERT_TO
+      #   sync: false

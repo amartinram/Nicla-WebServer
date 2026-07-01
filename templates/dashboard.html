@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StepCounter — Patient Monitor</title>
+  <style>
+    :root { --bg:#ffffff; --card:#ffffff; --border:#e2e8f0; --ok:#16a34a; --alert:#dc2626; --muted:#64748b; --text:#0f172a; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--text); }
+    header { padding:24px 32px; border-bottom:1px solid var(--border); display:flex;
+             align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+    h1 { margin:0; font-size:22px; }
+    .meta { color:var(--muted); font-size:13px; }
+    main { padding:24px 32px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:16px; }
+    .card { background:var(--card); border-radius:12px; padding:18px 20px; text-decoration:none;
+            color:inherit; border:1px solid var(--border); transition:transform .08s ease, box-shadow .08s ease;
+            display:block; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .card:hover { transform:translateY(-2px); box-shadow:0 6px 16px rgba(0,0,0,.08); }
+    .row { display:flex; justify-content:space-between; align-items:center; }
+    .id { font-weight:600; font-size:15px; word-break:break-all; }
+    .pill { font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; letter-spacing:.4px; }
+    .pill.OK { background:rgba(22,163,74,.12); color:var(--ok); }
+    .pill.ALERT { background:rgba(220,38,38,.12); color:var(--alert); }
+    .steps { font-size:30px; font-weight:700; margin:10px 0 2px; }
+    .sub { color:var(--muted); font-size:13px; }
+    .tags { margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; }
+    .tag { font-size:11px; background:rgba(220,38,38,.12); color:var(--alert);
+           padding:2px 8px; border-radius:6px; }
+    .empty { color:var(--muted); padding:40px; text-align:center; }
+    .legend { color:var(--muted); font-size:12px; margin-bottom:16px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🦿 StepCounter — Patient Monitor</h1>
+    <span class="meta">Updated {{ generated }} · <a href="/settings" style="color:#94a3b8">Settings</a> · <a href="/logout" style="color:#94a3b8">Sign out</a></span>
+  </header>
+  <main>
+    {% with messages = get_flashed_messages() %}
+      {% for m in messages %}<p style="background:rgba(34,197,94,.15);color:#22c55e;padding:8px 12px;border-radius:8px;font-size:13px">{{ m }}</p>{% endfor %}
+    {% endwith %}
+    <p class="legend">
+      Alert rules: <b>SILENT</b> if no data for &gt; {{ silent_hours }} h ·
+      <b>LOW</b> if latest daily steps &lt; each patient's own threshold ·
+      <b>BATTERY</b> if battery &lt; {{ battery_min }}%.
+    </p>
+    {% if patients %}
+    <div class="grid">
+      {% for p in patients %}
+      <a class="card" href="/patient/{{ p.device_id }}">
+        <div class="row">
+          <span class="id">{{ p.label }}</span>
+          <span class="pill {{ p.status }}">{{ p.status }}</span>
+        </div>
+        {% if p.label != p.device_id %}<div class="sub" style="word-break:break-all">{{ p.device_id }}</div>{% endif %}
+        <div class="steps">{{ p.total_steps }}</div>
+        <div class="sub">steps · last day (target {{ p.min_steps }})</div>
+        <div class="sub">battery {% if p.battery is not none %}{{ p.battery }}%{% else %}—{% endif %} ·
+          last seen {{ p.last_seen }} ({{ p.hours_ago }} h ago)</div>
+        {% if p.alerts %}
+        <div class="tags">
+          {% for a in p.alerts %}<span class="tag">{{ a }}</span>{% endfor %}
+        </div>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">No data received yet. Point a device (or seed_demo.py) at this server.</p>
+    {% endif %}
+  </main>
+</body>
+</html>

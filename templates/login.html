@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StepCounter — Sign in</title>
+  <style>
+    :root { --bg:#f1f5f9; --card:#ffffff; --border:#e2e8f0; --muted:#64748b; --text:#0f172a; --accent:#2563eb; }
+    body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
+           font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--text); }
+    form { background:var(--card); border:1px solid var(--border); border-radius:14px;
+           padding:32px; width:300px; box-shadow:0 4px 12px rgba(0,0,0,.06); }
+    h1 { margin:0 0 4px; font-size:20px; }
+    p.sub { margin:0 0 22px; color:var(--muted); font-size:13px; }
+    label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+    input { width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border);
+            background:#ffffff; color:var(--text); font-size:14px; }
+    button { width:100%; margin-top:20px; padding:11px; border:0; border-radius:8px;
+             background:var(--accent); color:#ffffff; font-weight:700; font-size:14px; cursor:pointer; }
+    .err { background:rgba(220,38,38,.12); color:#dc2626; padding:8px 12px;
+           border-radius:8px; font-size:13px; margin-bottom:12px; }
+  </style>
+</head>
+<body>
+  <form method="post">
+    <h1>🦿 StepCounter</h1>
+    <p class="sub">Authorised clinical access only</p>
+    {% with messages = get_flashed_messages() %}
+      {% for m in messages %}<div class="err">{{ m }}</div>{% endfor %}
+    {% endwith %}
+    <label for="user">User</label>
+    <input id="user" name="user" autocomplete="username" autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password">
+    <button type="submit">Sign in</button>
+  </form>
+</body>
+</html>
