@@ -82,11 +82,14 @@ app.secret_key = SECRET_KEY
 # records the proxy instead of the patient's phone, too high and a caller can
 # forge their own address by sending an X-Forwarded-For header.
 #
-# Measured on Render: the chain arrives as "<client>, <internal router>", so
-# the client is the 2nd entry from the right. The rightmost is an internal
-# 10.x address that changes per request, which is what made every audit row
-# read 10.30.151.133 before this was raised from 1 to 2.
-PROXY_HOPS = int(os.environ.get("PROXY_HOPS", "2"))
+# Measured against the deployed service, which sits behind Cloudflare:
+#   <client>, <cloudflare edge>, <render internal router>
+# so the client is the 3rd entry from the right. 1 gave a private 10.x address
+# and 2 gave a Cloudflare address (162.158.x / 172.70.x) -- both varying per
+# request, which is the tell that they are infrastructure and not the caller.
+# If len(X-Forwarded-For) < PROXY_HOPS, ProxyFix falls back to the socket peer
+# rather than guessing, so a shorter chain degrades safely.
+PROXY_HOPS = int(os.environ.get("PROXY_HOPS", "3"))
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=PROXY_HOPS, x_proto=1, x_host=1)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,

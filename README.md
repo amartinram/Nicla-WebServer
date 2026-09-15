@@ -119,7 +119,7 @@ https://stepcounter.onrender.com/data?token=<INGEST_TOKEN>
 | `INGEST_TOKEN` | *(empty=open)* | Secret the phone must send as `?token=` |
 | `SECRET_KEY` | random | Session signing key (set a fixed one in prod) |
 | `FORCE_HTTPS` | `1` | Redirect to HTTPS + secure cookies (set `0` for localhost) |
-| `PROXY_HOPS` | `2` | Proxies in front of the app. Decides which `X-Forwarded-For` entry is the client, so the audit log names the phone and not the proxy. `2` is measured for Render; use `1` behind a single nginx |
+| `PROXY_HOPS` | `3` | Proxies in front of the app. Decides which `X-Forwarded-For` entry is the client, so the audit log names the phone and not the proxy. `3` is measured for Render (Cloudflare + Render's router); use `1` behind a single nginx |
 | `DATABASE_URL` | *(unset)* | Postgres connection string. **Set = production**, unset = local SQLite |
 | `DB_PATH` | `stepcounter.db` | SQLite file, used only when `DATABASE_URL` is unset |
 | `ALERT_SILENT_HOURS` | `26` | Silence before a SILENT alert |
