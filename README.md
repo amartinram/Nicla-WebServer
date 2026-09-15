@@ -90,13 +90,31 @@ https://stepcounter.onrender.com/data?token=<INGEST_TOKEN>
 ```
 (copy `INGEST_TOKEN` from Render → Environment).
 
-> **Remaining free-tier caveat:** the web service still **sleeps after ~15 min
-> idle** and takes ~1 min to wake. Data is safe (it is in Neon, not on the
-> container), and the phone caches + retries, so uploads survive. But the
-> background alert thread only runs while the service is awake — so alerts are
-> evaluated when the dashboard is opened or an upload arrives, not strictly every
-> `ALERT_CHECK_MIN`. To get punctual alerts, either ping the service every ~10 min
-> from a free uptime monitor, or move to an always-on paid instance.
+### Keeping the service awake (`.github/workflows/keep-awake.yml`)
+
+The free plan stops a web service after 15 minutes without traffic. Data is
+never at risk — it lives in the database, not on the container — and a slow
+first request only delays an upload, which the phone retries.
+
+The real problem is **alerting**. The alert thread runs only while the service
+is awake, and a `SILENT` alert means *no data has arrived from this patient*.
+No data means nothing wakes the service, so the alert that matters most would
+never fire: a patient could stop using the device entirely and the only way to
+find out would be to open the dashboard manually.
+
+A scheduled GitHub Action therefore pings `/healthz` every 10 minutes to hold
+the service up. Two limits to know about:
+
+- GitHub runs scheduled workflows **best-effort** and delays them under load,
+  so the service will occasionally nap. The ping wakes it again.
+- GitHub **disables scheduled workflows after 60 days of repository
+  inactivity**. On a long deployment, re-enable it in the Actions tab (or
+  push any commit). A more reliable alternative is an external monitor such as
+  cron-job.org or UptimeRobot pointed at the same URL.
+
+Staying awake continuously uses roughly **730 of the free tier's 750 instance
+hours per month**, so this only fits while this is the *only* free web service
+on the account. Adding another would exhaust the quota and stop both.
 
 ## Path to clinical deployment
 

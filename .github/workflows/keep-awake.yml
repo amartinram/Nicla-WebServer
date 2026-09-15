@@ -1,0 +1,45 @@
+# Keeps the dashboard from going to sleep.
+#
+# The free hosting plan stops a web service after 15 minutes without traffic.
+# That is mostly a latency annoyance, except for one case that matters
+# clinically: the alert thread only runs while the service is awake, and a
+# SILENT alert means "no data has arrived from this patient". No data means
+# nothing wakes the service, so the alert that matters most would never fire.
+# Pinging the health endpoint keeps the service up so alerts run on schedule.
+#
+# The endpoint touches neither the database nor authentication, so this is a
+# cheap request. A failure here fails the workflow, which makes GitHub email
+# you -- a free uptime alert as a side effect.
+
+name: Keep the dashboard awake
+
+on:
+  schedule:
+    # Every 10 minutes. GitHub runs scheduled jobs on a best-effort basis and
+    # can delay them under load, so this is deliberately more frequent than the
+    # 15-minute sleep timer to leave room for slippage.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:        # also runnable by hand from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Ping the health endpoint
+        run: |
+          URL="https://stepcounter-g5lg.onrender.com/healthz"
+          for attempt in 1 2 3; do
+            # A sleeping instance takes ~50 s to wake, so allow well beyond that.
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 120 "$URL" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "healthy (HTTP 200) on attempt $attempt"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code"
+            if [ "$attempt" -lt 3 ]; then
+              sleep 30
+            fi
+          done
+          echo "::error::$URL did not return 200 after 3 attempts"
+          exit 1
