@@ -10,6 +10,12 @@ services:
     startCommand: gunicorn app:app --workers 1 --threads 4 --bind 0.0.0.0:$PORT --timeout 60
     healthCheckPath: /login
     envVars:
+      # Durable storage. Render's free filesystem is wiped every time the
+      # service sleeps (15 min idle), so a local SQLite file would lose data
+      # between the device's once-a-day uploads. Point this at a managed
+      # Postgres in an EU region — patient data must not leave the EU.
+      - key: DATABASE_URL
+        sync: false                  # paste the EU Postgres connection string
       - key: SECRET_KEY
         generateValue: true          # random session key
       - key: INGEST_TOKEN

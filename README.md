@@ -41,6 +41,9 @@ only the app's `SERVER_URL` changes.
 
 ## Run locally
 
+Local runs use a plain SQLite file — no database to install. (Leave
+`DATABASE_URL` unset; setting it switches the app to Postgres.)
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -56,31 +59,52 @@ python app.py                        # http://localhost:8000
 Log in at `/login` (user `doctor`). The demo seeds every dashboard state so you
 can take screenshots for the article.
 
-## Deploy free to Render (EU / HTTPS, no domain needed)
+## Deploy free to Render + Neon (EU / HTTPS, no domain needed)
 
-1. Push this folder to a GitHub repo.
-2. Generate the password hash: `python generate_hash.py` → copy the
-   `DOCTOR_PASSWORD_HASH=…` value.
-3. In Render: **New → Blueprint**, select the repo (it reads `render.yaml`).
-   `SECRET_KEY` and `INGEST_TOKEN` are auto-generated; paste `DOCTOR_PASSWORD_HASH`
-   when prompted.
-4. Render gives you `https://stepcounter.onrender.com` (HTTPS, Frankfurt).
-5. In the Android app's **"URL servidor"** field, set:
-   ```
-   https://stepcounter.onrender.com/data?token=<INGEST_TOKEN>
-   ```
-   (copy `INGEST_TOKEN` from the Render dashboard → Environment).
+> **Why two services.** Render's free filesystem is **ephemeral**: it is wiped
+> every time the service redeploys *or sleeps* (15 min idle). Since the device
+> uploads roughly once a day, the server would be asleep — and therefore reset —
+> between nearly every upload, so a local SQLite file would lose almost all data.
+> The database therefore lives on a separate managed Postgres. Both services are
+> free and both sit in the **EU**, so patient data never leaves it.
 
-> **Free-tier caveats:** the free web service **sleeps after ~15 min idle**
-> (first request wakes it; the phone caches + retries, so no data is lost), and
-> the free disk is **ephemeral** — SQLite resets on redeploy. Fine for the
-> article/demo. For the clinical deployment see below.
+**1. Database — Neon (free, EU).** Create a project at neon.tech, **region
+`AWS eu-central-1` (Frankfurt)**. Copy the connection string:
+
+```
+postgresql://<user>:<password>@<host>.eu-central-1.aws.neon.tech/<db>?sslmode=require
+```
+
+**2. Password hash.** `python generate_hash.py` → copy the `DOCTOR_PASSWORD_HASH=…` value.
+
+**3. Web service — Render (free, Frankfurt).** **New → Blueprint**, select this
+repo (it reads `render.yaml`). `SECRET_KEY` and `INGEST_TOKEN` are auto-generated;
+paste `DOCTOR_PASSWORD_HASH` and the Neon `DATABASE_URL` when prompted.
+
+**4.** Render gives you `https://stepcounter.onrender.com` (HTTPS, Frankfurt) —
+a stable URL, unlike the rotating `start.sh` tunnel.
+
+**5.** In the Android app's **"URL servidor"** field, set:
+```
+https://stepcounter.onrender.com/data?token=<INGEST_TOKEN>
+```
+(copy `INGEST_TOKEN` from Render → Environment).
+
+> **Remaining free-tier caveat:** the web service still **sleeps after ~15 min
+> idle** and takes ~1 min to wake. Data is safe (it is in Neon, not on the
+> container), and the phone caches + retries, so uploads survive. But the
+> background alert thread only runs while the service is awake — so alerts are
+> evaluated when the dashboard is opened or an upload arrives, not strictly every
+> `ALERT_CHECK_MIN`. To get punctual alerts, either ping the service every ~10 min
+> from a free uptime monitor, or move to an always-on paid instance.
 
 ## Path to clinical deployment
 
-1. **Durable storage** — move from SQLite to managed **Postgres** (or a paid
-   persistent disk). All DB access is isolated in `app.py`, so this is localized.
-2. **Always-on plan** — remove the free-tier sleep.
+1. ~~**Durable storage**~~ — **done.** `db.py` runs the app on SQLite locally and
+   managed **Postgres** in production from one set of SQL statements; set
+   `DATABASE_URL` to switch.
+2. **Always-on plan** — remove the free-tier sleep, so the alert thread runs on
+   schedule rather than only while the service is awake.
 3. **Hardening** — CSRF protection, rate limiting, per-clinician accounts/roles,
    key rotation, log retention.
 4. **Compliance** — provider **DPA**, EU/health-certified hosting (e.g. HDS),
@@ -95,7 +119,8 @@ can take screenshots for the article.
 | `INGEST_TOKEN` | *(empty=open)* | Secret the phone must send as `?token=` |
 | `SECRET_KEY` | random | Session signing key (set a fixed one in prod) |
 | `FORCE_HTTPS` | `1` | Redirect to HTTPS + secure cookies (set `0` for localhost) |
-| `DB_PATH` | `stepcounter.db` | SQLite path |
+| `DATABASE_URL` | *(unset)* | Postgres connection string. **Set = production**, unset = local SQLite |
+| `DB_PATH` | `stepcounter.db` | SQLite file, used only when `DATABASE_URL` is unset |
 | `ALERT_SILENT_HOURS` | `26` | Silence before a SILENT alert |
 | `ALERT_MIN_STEPS` | `1000` | Daily-step floor (placeholder — set clinically) |
 | `ALERT_CHECK_MIN` | `30` | Background check cadence (min) |

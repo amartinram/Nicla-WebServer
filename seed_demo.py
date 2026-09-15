@@ -9,12 +9,11 @@ Creates:
     AA_BB_CC_DD_EE_02  -> LOW    (very few steps on the latest day)
     AA_BB_CC_DD_EE_03  -> SILENT (last report is days old)
 """
-import os
 import time
 import random
-import sqlite3
 
-DB_PATH = os.environ.get("DB_PATH", "stepcounter.db")
+from db import connect, init_schema
+
 DAY_MS = 86_400_000
 MIN_PER_DAY = 1440
 
@@ -50,17 +49,12 @@ def insert_patient(db, device_id, daily_targets, last_offset_days=0):
 
 
 def main():
-    db = sqlite3.connect(DB_PATH)
-    db.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS readings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT NOT NULL, captured_at INTEGER NOT NULL,
-            total_steps INTEGER NOT NULL, minute_log TEXT NOT NULL,
-            received_at INTEGER NOT NULL);
-        """
-    )
-    db.execute("DELETE FROM readings WHERE device_id LIKE 'AA_BB_CC_DD_EE_%'")
+    init_schema()                       # same schema as the app, on either engine
+    db = connect()
+
+    # Wildcard goes in the parameter, not the SQL, so the '%' is never mistaken
+    # for a psycopg placeholder.
+    db.execute("DELETE FROM readings WHERE device_id LIKE ?", ("AA_BB_CC_DD_EE_%",))
 
     insert_patient(db, "AA_BB_CC_DD_EE_01", [3200, 4100, 3800, 4500, 3900, 4200, 4000])
     insert_patient(db, "AA_BB_CC_DD_EE_02", [3000, 2800, 2500, 1900, 1200, 700, 300])
@@ -68,7 +62,7 @@ def main():
 
     db.commit()
     db.close()
-    print(f"Seeded demo patients into {DB_PATH}")
+    print("Seeded demo patients")
 
 
 if __name__ == "__main__":

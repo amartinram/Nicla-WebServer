@@ -4,3 +4,11 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# Runtime logs — these captured the host's IP and device MACs, never commit them
+*.log
+start.out
+
+# Local-tunnel leftovers. cloudflared is a 39 MB binary: download it, don't vendor it.
+cloudflared
+.live_token

@@ -23,7 +23,6 @@ sheetName / steps / logData / captureTime.
 
 import os
 import time
-import sqlite3
 import smtplib
 import secrets
 import threading
@@ -36,10 +35,13 @@ from flask import (Flask, request, render_template, redirect, url_for,
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
+from db import connect, init_schema
+
 # ----------------------------------------------------------------------------
 # Configuration (override with environment variables)
 # ----------------------------------------------------------------------------
-DB_PATH            = os.environ.get("DB_PATH", "stepcounter.db")
+# Storage is selected in db.py: DATABASE_URL (Postgres, production) else
+# DB_PATH (SQLite, local development).
 ALERT_SILENT_HOURS = float(os.environ.get("ALERT_SILENT_HOURS", "26"))
 ALERT_MIN_STEPS    = int(os.environ.get("ALERT_MIN_STEPS", "1000"))   # per-patient default/fallback
 ALERT_MIN_CADENCE  = float(os.environ.get("ALERT_MIN_CADENCE", "0"))  # per-patient default (0 = off)
@@ -99,8 +101,7 @@ if not INGEST_TOKEN:
 # ----------------------------------------------------------------------------
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
+        g.db = connect()
     return g.db
 
 
@@ -111,65 +112,8 @@ def close_db(exc):
         db.close()
 
 
-def init_db():
-    db = sqlite3.connect(DB_PATH)
-    db.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS readings (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id   TEXT    NOT NULL,
-            captured_at INTEGER NOT NULL,
-            total_steps INTEGER NOT NULL,
-            minute_log  TEXT    NOT NULL,
-            received_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_readings_device
-            ON readings (device_id, captured_at);
-
-        CREATE TABLE IF NOT EXISTS alert_state (
-            device_id   TEXT NOT NULL,
-            kind        TEXT NOT NULL,
-            notified_at INTEGER NOT NULL,
-            PRIMARY KEY (device_id, kind)
-        );
-
-        CREATE TABLE IF NOT EXISTS audit (
-            id     INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts     INTEGER NOT NULL,
-            actor  TEXT    NOT NULL,
-            action TEXT    NOT NULL,
-            target TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS settings (
-            key   TEXT PRIMARY KEY,
-            value TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS patient_config (
-            device_id   TEXT PRIMARY KEY,
-            min_steps   INTEGER NOT NULL DEFAULT 1000,
-            min_cadence REAL    NOT NULL DEFAULT 0,
-            min_minutes INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS device_alias (
-            device_id TEXT PRIMARY KEY,
-            label     TEXT NOT NULL
-        );
-        """
-    )
-    # Migrate older patient_config tables that only had min_steps.
-    cols = {r[1] for r in db.execute("PRAGMA table_info(patient_config)").fetchall()}
-    if "min_cadence" not in cols:
-        db.execute("ALTER TABLE patient_config ADD COLUMN min_cadence REAL NOT NULL DEFAULT 0")
-    if "min_minutes" not in cols:
-        db.execute("ALTER TABLE patient_config ADD COLUMN min_minutes INTEGER NOT NULL DEFAULT 0")
-    # Seed defaults from environment on first run (UI can override afterwards).
-    for k, v in SETTINGS_DEFAULTS.items():
-        db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
-    db.commit()
-    db.close()
+# The schema, migrations and default-seeding live in db.py so they can be
+# expressed once and applied to either engine (see init_schema()).
 
 
 # Configurable through the dashboard's Settings page; env values are the defaults.
@@ -588,8 +532,7 @@ def send_email(subject, body, cfg):
 
 
 def check_alerts():
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
+    db = connect()
     now_ms = int(time.time() * 1000)
     cooldown_ms = ALERT_COOLDOWN_H * 3600_000
     cfg = get_settings(db)
@@ -666,7 +609,7 @@ def alert_loop():
 # ----------------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------------
-init_db()
+init_schema(SETTINGS_DEFAULTS)
 if os.environ.get("RUN_ALERTER", "1") == "1":
     threading.Thread(target=alert_loop, daemon=True).start()
 
