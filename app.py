@@ -204,12 +204,28 @@ def audit(action, target=None, actor=None):
 # ----------------------------------------------------------------------------
 # Security helpers
 # ----------------------------------------------------------------------------
+HEALTH_PATH = "/healthz"
+
+
 @app.before_request
 def enforce_https():
+    # The host's health check probes the container directly over plain HTTP, so
+    # it never carries X-Forwarded-Proto. Redirecting it would return 301 and be
+    # read as unhealthy, so this one path is exempt. It exposes nothing.
+    if request.path == HEALTH_PATH:
+        return
     if FORCE_HTTPS and not request.is_secure and request.method == "GET":
         # request.is_secure already honours X-Forwarded-Proto via ProxyFix.
         url = request.url.replace("http://", "https://", 1)
         return redirect(url, code=301)
+
+
+@app.route(HEALTH_PATH)
+def healthz():
+    """Liveness only — deliberately does not touch the database. The app and the
+    database sleep independently; failing this check on a cold database would
+    make the host restart a perfectly healthy web service."""
+    return "ok\n", 200
 
 
 def login_required(view):
