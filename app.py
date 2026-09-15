@@ -75,7 +75,19 @@ ALERT_TO   = os.environ.get("ALERT_TO", "")
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 # Trust the host's reverse proxy for scheme/host (Render, Fly, nginx...).
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+#
+# PROXY_HOPS is how many proxies sit in front of the app, and it decides which
+# entry of X-Forwarded-For is treated as the client. ProxyFix counts from the
+# RIGHT, so the value must match the real chain: too low and the audit log
+# records the proxy instead of the patient's phone, too high and a caller can
+# forge their own address by sending an X-Forwarded-For header.
+#
+# Measured on Render: the chain arrives as "<client>, <internal router>", so
+# the client is the 2nd entry from the right. The rightmost is an internal
+# 10.x address that changes per request, which is what made every audit row
+# read 10.30.151.133 before this was raised from 1 to 2.
+PROXY_HOPS = int(os.environ.get("PROXY_HOPS", "2"))
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=PROXY_HOPS, x_proto=1, x_host=1)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
