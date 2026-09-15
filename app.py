@@ -297,9 +297,14 @@ def ingest():
     captured_at = int(capture_raw) if capture_raw.isdigit() else int(time.time() * 1000)
 
     db = get_db()
+    # Idempotent: the phone retries an upload whose response it never saw, and
+    # on a sleeping free instance the server can commit the row well after the
+    # client has given up waiting. DO NOTHING makes that retry a no-op instead
+    # of a second copy of the day. Still a 200, so the phone clears its cache.
     db.execute(
         "INSERT INTO readings (device_id, captured_at, total_steps, minute_log, received_at)"
-        " VALUES (?, ?, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT (device_id, captured_at) DO NOTHING",
         (device_id, captured_at, total_steps, minute_log, int(time.time() * 1000)),
     )
     db.commit()

@@ -151,8 +151,9 @@ CREATE TABLE IF NOT EXISTS readings (
     minute_log  TEXT    NOT NULL,
     received_at BIGINT  NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_readings_device
-    ON readings (device_id, captured_at);
+-- The (device_id, captured_at) index is created in init_schema() instead of
+-- here, because it must be UNIQUE and existing rows have to be deduplicated
+-- before the constraint can be applied.
 
 CREATE TABLE IF NOT EXISTS alert_state (
     device_id   TEXT   NOT NULL,
@@ -191,6 +192,19 @@ CREATE TABLE IF NOT EXISTS device_alias (
 _MIGRATIONS = [("min_cadence", "REAL NOT NULL DEFAULT 0"),
                ("min_minutes", "INTEGER NOT NULL DEFAULT 0")]
 
+# Enforces one reading per device per capture time, making ingest idempotent.
+UNIQUE_READING_INDEX = "uq_readings_device_capture"
+
+
+def _index_exists(conn, name):
+    if IS_POSTGRES:
+        row = conn.execute("SELECT 1 FROM pg_class WHERE relkind = 'i'"
+                           " AND relname = ?", (name,)).fetchone()
+    else:
+        row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'index'"
+                           " AND name = ?", (name,)).fetchone()
+    return row is not None
+
 
 def init_schema(seed_settings=None):
     """Create tables if absent, apply migrations, seed default settings."""
@@ -208,6 +222,24 @@ def init_schema(seed_settings=None):
             for column, decl in _MIGRATIONS:
                 if column not in existing:
                     conn.execute(f"ALTER TABLE patient_config ADD COLUMN {column} {decl}")
+
+        # One reading per device per capture time. Without this a client that
+        # retried after a timeout -- the server having already committed the
+        # row -- stored the day twice, which showed the patient twice on the
+        # dashboard and drew a phantom bar on their chart.
+        #
+        # Guarded so it runs once rather than on every boot: CREATE/DROP INDEX
+        # take an exclusive lock on the table, which would otherwise wait
+        # behind any in-flight read every time a worker starts.
+        if not _index_exists(conn, UNIQUE_READING_INDEX):
+            # Deduplicate first (keeping the earliest row) or the constraint
+            # cannot be applied to a database that already has duplicates.
+            conn.execute("DELETE FROM readings WHERE id NOT IN"
+                         " (SELECT MIN(id) FROM readings GROUP BY device_id, captured_at)")
+            conn.execute(f"CREATE UNIQUE INDEX {UNIQUE_READING_INDEX}"
+                         " ON readings (device_id, captured_at)")
+            # Superseded by the unique index, which serves the same lookups.
+            conn.execute("DROP INDEX IF EXISTS idx_readings_device")
 
         for key, value in (seed_settings or {}).items():
             conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)"
