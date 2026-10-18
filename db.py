@@ -21,8 +21,11 @@ at DB_PATH.
 """
 
 import os
+import random
 import re
+import socket
 import sqlite3
+import time
 from urllib.parse import urlparse, parse_qs
 
 DB_PATH      = os.environ.get("DB_PATH", "stepcounter.db")
@@ -45,6 +48,19 @@ STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "20000"))
 # to be declared dead. Five seconds still absorbs a cold start, because waking
 # a suspended compute happens after the connection is accepted, not before it.
 CONNECT_TIMEOUT_S = int(os.environ.get("DB_CONNECT_TIMEOUT_S", "5"))
+
+# Connect over IPv4 even when the host also publishes AAAA records.
+#
+# Managed Postgres hostnames commonly resolve to three A and three AAAA
+# addresses, and getaddrinfo returns the IPv6 ones first (RFC 6724). On a host
+# with no IPv6 egress -- which includes several container platforms -- every
+# one of those is a silent timeout before libpq ever reaches an address that
+# works. It presents as a database that is unreachable from the deployment and
+# perfectly healthy from a workstation, with no error to explain the asymmetry.
+# Set DB_FORCE_IPV4=0 on a host with real IPv6 connectivity.
+FORCE_IPV4 = os.environ.get("DB_FORCE_IPV4", "1") == "1"
+_IPV4_TTL_S = 60
+_ipv4_cache = {}
 
 
 # ----------------------------------------------------------------------------
@@ -137,6 +153,40 @@ class _PostgresConnection:
         return getattr(self._conn, name)
 
 
+def _ipv4_address(host, port):
+    """One A-record address for `host`, cached briefly.
+
+    Chosen at random rather than first so repeated connections still spread
+    across the addresses the way resolving normally would.
+    """
+    now = time.monotonic()
+    cached = _ipv4_cache.get(host)
+    if cached and cached[1] > now:
+        return cached[0]
+    infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    address = random.choice([i[4][0] for i in infos])
+    _ipv4_cache[host] = (address, now + _IPV4_TTL_S)
+    return address
+
+
+def _ipv4_kwargs(url):
+    """`hostaddr` pinning the connection to IPv4, or {} to let libpq resolve.
+
+    Only hostaddr is set: `host` stays in the connection string, so TLS
+    verification and SNI still see the real hostname, which is what managed
+    providers route on.
+    """
+    if not FORCE_IPV4:
+        return {}
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        return {}
+    try:
+        return {"hostaddr": _ipv4_address(parsed.hostname, parsed.port or 5432)}
+    except Exception:  # noqa: BLE001 - a failed lookup must fall back, not fail
+        return {}
+
+
 def _startup_options(url):
     """The libpq `options` string to connect with, or None.
 
@@ -169,6 +219,7 @@ def connect():
             psycopg.connect(DATABASE_URL, row_factory=_row_factory,
                             connect_timeout=CONNECT_TIMEOUT_S,
                             options=options,
+                            **_ipv4_kwargs(DATABASE_URL),
                             # psycopg auto-prepares a statement after 5 uses, which a
                             # transaction-mode pooler (Neon's "-pooler" endpoint,
                             # PgBouncer) can reject. Our query volume gains nothing

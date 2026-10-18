@@ -36,7 +36,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from db import (connect, init_schema, IS_POSTGRES, STATEMENT_TIMEOUT_MS,
-                CONNECT_TIMEOUT_S)
+                CONNECT_TIMEOUT_S, FORCE_IPV4)
 
 # ----------------------------------------------------------------------------
 # Configuration (override with environment variables)
@@ -350,6 +350,7 @@ def healthz_db():
 
     lines = [f"engine: {'postgres' if IS_POSTGRES else 'sqlite'}",
              f"connect_timeout_s: {CONNECT_TIMEOUT_S} (per resolved address)",
+             f"force_ipv4: {FORCE_IPV4}",
              f"statement_timeout_ms: {STATEMENT_TIMEOUT_MS}",
              f"schema_applied: {_schema_ready}"]
     started = time.time()

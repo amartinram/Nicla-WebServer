@@ -94,6 +94,13 @@ postgresql://<user>:<password>@<host>.eu-central-1.aws.neon.tech/<db>?sslmode=re
 
 **2. Password hash.** `python generate_hash.py` → copy the `DOCTOR_PASSWORD_HASH=…` value.
 
+> **Connectivity note.** The database host resolves to both IPv4 and IPv6
+> addresses and IPv6 is tried first, so a platform without IPv6 egress sees
+> only timeouts — healthy from a workstation, unreachable from the deployment,
+> with no error that explains the difference. Connections are pinned to IPv4
+> by default (`DB_FORCE_IPV4`); `hostaddr` carries the address while the
+> hostname stays in the connection string for TLS and SNI.
+>
 > **Checking a deployment.** `GET /healthz/db?token=<INGEST_TOKEN>` reports, from
 > inside the running service, whether it can reach its database and why not —
 > connection, query, schema and row count, with the real driver error on
@@ -168,6 +175,7 @@ on the account. Adding another would exhaust the quota and stop both.
 | `FORCE_HTTPS` | `1` | Redirect to HTTPS + secure cookies (set `0` for localhost) |
 | `PROXY_HOPS` | `3` | Proxies in front of the app. Decides which `X-Forwarded-For` entry is the client, so the audit log names the phone and not the proxy. `3` is measured for Render (Cloudflare + Render's router); use `1` behind a single nginx |
 | `DATABASE_URL` | *(unset)* | Postgres connection string. **Set = production**, unset = local SQLite |
+| `DB_FORCE_IPV4` | `1` | Connect over IPv4 even when the database host also publishes AAAA records. Neon publishes three of each, and `getaddrinfo` returns IPv6 first (RFC 6724), so on a host without IPv6 egress — Render included — every attempt times out before libpq reaches an address that works. Set `0` where IPv6 genuinely routes |
 | `DB_CONNECT_TIMEOUT_S` | `5` | Ceiling on establishing a connection, applied by libpq to **each** address the host resolves to — a managed Postgres name often has three, so the worst case is three times this |
 | `DB_STATEMENT_TIMEOUT_MS` | `20000` | Server-side ceiling on any one query. `connect_timeout` only bounds the handshake, so without this a database that stops making progress produces a 60 s hang and a killed worker instead of an error in the log. `0` disables |
 | `DB_PATH` | `stepcounter.db` | SQLite file, used only when `DATABASE_URL` is unset |
