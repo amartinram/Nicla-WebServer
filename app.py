@@ -35,7 +35,7 @@ from flask import (Flask, request, render_template, redirect, url_for,
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from db import connect, init_schema
+from db import connect, init_schema, IS_POSTGRES, STATEMENT_TIMEOUT_MS
 
 # ----------------------------------------------------------------------------
 # Configuration (override with environment variables)
@@ -330,6 +330,50 @@ def healthz():
     database sleep independently; failing this check on a cold database would
     make the host restart a perfectly healthy web service."""
     return "ok\n", 200
+
+
+@app.route(HEALTH_PATH + "/db")
+def healthz_db():
+    """Why the database is unreachable, without needing the host's log viewer.
+
+    Deliberately separate from /healthz, which must never touch the database:
+    the host's health check has a few seconds to answer and the whole point of
+    that endpoint is to keep reporting while the database is the broken part.
+
+    Behind the ingest token, because the error text names the host it failed to
+    reach. It never discloses the connection string or the credentials.
+    """
+    if INGEST_TOKEN:
+        if not secrets.compare_digest(request.values.get("token", ""), INGEST_TOKEN):
+            abort(401)
+
+    lines = [f"engine: {'postgres' if IS_POSTGRES else 'sqlite'}",
+             f"statement_timeout_ms: {STATEMENT_TIMEOUT_MS}",
+             f"schema_applied: {_schema_ready}"]
+    started = time.time()
+    try:
+        db = connect()
+        lines.append(f"connect: ok in {time.time() - started:.2f}s")
+        t = time.time()
+        db.execute("SELECT 1").fetchone()
+        lines.append(f"query: ok in {time.time() - t:.2f}s")
+        try:
+            cols = [r[0] for r in db.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_name = 'readings'").fetchall()] if IS_POSTGRES else [
+                r[1] for r in db.execute("PRAGMA table_info(readings)").fetchall()]
+            lines.append(f"readings table: {'present' if cols else 'MISSING'}")
+            lines.append(f"gait columns: {'yes' if 'speed_log' in cols else 'NO'}")
+            n = db.execute("SELECT COUNT(*) FROM readings").fetchone()[0]
+            lines.append(f"rows: {n}")
+        except Exception as e:  # noqa: BLE001 - schema questions must not mask a working connection
+            lines.append(f"schema check failed: {type(e).__name__}: {e}")
+        db.close()
+        return "\n".join(lines) + "\n", 200
+    except Exception as e:  # noqa: BLE001 - reporting the failure IS this endpoint's job
+        lines.append(f"FAILED after {time.time() - started:.2f}s")
+        lines.append(f"{type(e).__name__}: {e}")
+        return "\n".join(lines) + "\n", 503
 
 
 def login_required(view):

@@ -94,7 +94,12 @@ postgresql://<user>:<password>@<host>.eu-central-1.aws.neon.tech/<db>?sslmode=re
 
 **2. Password hash.** `python generate_hash.py` → copy the `DOCTOR_PASSWORD_HASH=…` value.
 
-> **Checking a deployment.** `python check_db.py` prompts for a `DATABASE_URL`
+> **Checking a deployment.** `GET /healthz/db?token=<INGEST_TOKEN>` reports, from
+> inside the running service, whether it can reach its database and why not —
+> connection, query, schema and row count, with the real driver error on
+> failure. It is separate from `/healthz`, which never touches the database so
+> that it keeps answering the host's health check while the database is the
+> broken part. Locally, `python check_db.py` prompts for a `DATABASE_URL`
 > (hidden) and reports DNS, TCP, authentication and a real query separately, so
 > "the database is down" and "this host cannot reach the database" can be told
 > apart. The app itself now starts even when the database is unreachable — the

@@ -23,6 +23,7 @@ at DB_PATH.
 import os
 import re
 import sqlite3
+from urllib.parse import urlparse, parse_qs
 
 DB_PATH      = os.environ.get("DB_PATH", "stepcounter.db")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -127,15 +128,34 @@ class _PostgresConnection:
         return getattr(self._conn, name)
 
 
+def _startup_options(url):
+    """The libpq `options` string to connect with, or None.
+
+    Passed in the startup packet rather than as a later SET, because a
+    transaction-mode pooler (Neon's "-pooler" endpoint) hands out a different
+    backend per transaction and would drop a session-level SET.
+
+    Critically this MERGES with whatever the connection string already carries
+    instead of replacing it. Neon uses `options=endpoint%3D...` to route to the
+    right compute when the client cannot present SNI, and psycopg lets an
+    `options=` keyword override the one in the URL -- so setting ours blindly
+    would strip the routing out and leave the connection going nowhere.
+    """
+    if STATEMENT_TIMEOUT_MS <= 0:
+        return None
+    ours = f"-c statement_timeout={STATEMENT_TIMEOUT_MS}"
+    try:
+        existing = (parse_qs(urlparse(url).query).get("options") or [""])[0].strip()
+    except Exception:  # noqa: BLE001 - a URL we cannot parse still deserves a connection
+        existing = ""
+    return f"{existing} {ours}" if existing else ours
+
+
 def connect():
     """Open a connection to whichever engine is configured."""
     if IS_POSTGRES:
         import psycopg                      # imported lazily: not needed for local SQLite
-        # Passed in the startup packet rather than as a later SET, because a
-        # transaction-mode pooler (Neon's "-pooler" endpoint) hands out a
-        # different backend per transaction and would drop a session-level SET.
-        options = (f"-c statement_timeout={STATEMENT_TIMEOUT_MS}"
-                   if STATEMENT_TIMEOUT_MS > 0 else None)
+        options = _startup_options(DATABASE_URL)
         return _PostgresConnection(
             psycopg.connect(DATABASE_URL, row_factory=_row_factory, connect_timeout=15,
                             options=options,
