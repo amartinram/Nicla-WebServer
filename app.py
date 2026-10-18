@@ -124,8 +124,29 @@ if not INGEST_TOKEN:
 # ----------------------------------------------------------------------------
 # Database
 # ----------------------------------------------------------------------------
+_schema_ready = False
+_schema_lock = threading.Lock()
+
+
+def ensure_schema():
+    """Apply the schema once per process, on whichever request gets there first.
+
+    Retried on every connection until it succeeds, so a database that was down
+    at boot needs no restart once it comes back.
+    """
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        init_schema(SETTINGS_DEFAULTS)
+        _schema_ready = True
+
+
 def get_db():
     if "db" not in g:
+        ensure_schema()
         g.db = connect()
     return g.db
 
@@ -680,6 +701,7 @@ def send_email(subject, body, cfg):
 
 
 def check_alerts():
+    ensure_schema()
     db = connect()
     now_ms = int(time.time() * 1000)
     cooldown_ms = ALERT_COOLDOWN_H * 3600_000
@@ -769,7 +791,21 @@ def alert_loop():
 # ----------------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------------
-init_schema(SETTINGS_DEFAULTS)
+# The schema is applied lazily rather than at import, and an import-time failure
+# is never fatal.
+#
+# init_schema() talks to the database, so having it on the import path meant a
+# worker could not start at all while the database was unreachable: gunicorn
+# would restart it straight back into the same wall, /healthz would stop
+# answering, and the service went from "degraded" to "gone" with no way to see
+# why. Booting regardless keeps the health endpoint and the logs available,
+# which are exactly what you need when the database is the thing that broke --
+# and the first request that reaches a working database applies the schema.
+try:
+    ensure_schema()
+except Exception as e:  # noqa: BLE001 - a dead database must not stop the app booting
+    app.logger.error("[schema] not applied at startup, will retry on first request: %s", e)
+
 if os.environ.get("RUN_ALERTER", "1") == "1":
     threading.Thread(target=alert_loop, daemon=True).start()
 

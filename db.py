@@ -28,6 +28,14 @@ DB_PATH      = os.environ.get("DB_PATH", "stepcounter.db")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 IS_POSTGRES  = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 
+# Server-side ceiling on any single statement. connect_timeout only bounds the
+# handshake: once connected, a query against a database that has stopped making
+# progress will wait forever, which is how a database problem turned into a
+# 60-second request, a killed gunicorn worker and a 502 with nothing in the log
+# to explain it. With this set the query fails fast and the driver error is
+# what reaches the log instead. 0 disables it.
+STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "20000"))
+
 
 # ----------------------------------------------------------------------------
 # Row: sqlite3.Row-compatible row for psycopg
@@ -123,8 +131,14 @@ def connect():
     """Open a connection to whichever engine is configured."""
     if IS_POSTGRES:
         import psycopg                      # imported lazily: not needed for local SQLite
+        # Passed in the startup packet rather than as a later SET, because a
+        # transaction-mode pooler (Neon's "-pooler" endpoint) hands out a
+        # different backend per transaction and would drop a session-level SET.
+        options = (f"-c statement_timeout={STATEMENT_TIMEOUT_MS}"
+                   if STATEMENT_TIMEOUT_MS > 0 else None)
         return _PostgresConnection(
             psycopg.connect(DATABASE_URL, row_factory=_row_factory, connect_timeout=15,
+                            options=options,
                             # psycopg auto-prepares a statement after 5 uses, which a
                             # transaction-mode pooler (Neon's "-pooler" endpoint,
                             # PgBouncer) can reject. Our query volume gains nothing

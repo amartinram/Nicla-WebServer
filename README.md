@@ -94,6 +94,13 @@ postgresql://<user>:<password>@<host>.eu-central-1.aws.neon.tech/<db>?sslmode=re
 
 **2. Password hash.** `python generate_hash.py` → copy the `DOCTOR_PASSWORD_HASH=…` value.
 
+> **Checking a deployment.** `python check_db.py` prompts for a `DATABASE_URL`
+> (hidden) and reports DNS, TCP, authentication and a real query separately, so
+> "the database is down" and "this host cannot reach the database" can be told
+> apart. The app itself now starts even when the database is unreachable — the
+> schema is applied on the first request that finds a working database — so
+> `/healthz` and the logs stay available while you diagnose.
+
 **3. Web service — Render (free, Frankfurt).** **New → Blueprint**, select this
 repo (it reads `render.yaml`). `SECRET_KEY` and `INGEST_TOKEN` are auto-generated;
 paste `DOCTOR_PASSWORD_HASH` and the Neon `DATABASE_URL` when prompted.
@@ -156,6 +163,7 @@ on the account. Adding another would exhaust the quota and stop both.
 | `FORCE_HTTPS` | `1` | Redirect to HTTPS + secure cookies (set `0` for localhost) |
 | `PROXY_HOPS` | `3` | Proxies in front of the app. Decides which `X-Forwarded-For` entry is the client, so the audit log names the phone and not the proxy. `3` is measured for Render (Cloudflare + Render's router); use `1` behind a single nginx |
 | `DATABASE_URL` | *(unset)* | Postgres connection string. **Set = production**, unset = local SQLite |
+| `DB_STATEMENT_TIMEOUT_MS` | `20000` | Server-side ceiling on any one query. `connect_timeout` only bounds the handshake, so without this a database that stops making progress produces a 60 s hang and a killed worker instead of an error in the log. `0` disables |
 | `DB_PATH` | `stepcounter.db` | SQLite file, used only when `DATABASE_URL` is unset |
 | `ALERT_SILENT_HOURS` | `26` | Silence before a SILENT alert |
 | `ALERT_MIN_STEPS` | `1000` | Daily-step floor (placeholder — set clinically) |
