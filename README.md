@@ -168,6 +168,7 @@ on the account. Adding another would exhaust the quota and stop both.
 | `FORCE_HTTPS` | `1` | Redirect to HTTPS + secure cookies (set `0` for localhost) |
 | `PROXY_HOPS` | `3` | Proxies in front of the app. Decides which `X-Forwarded-For` entry is the client, so the audit log names the phone and not the proxy. `3` is measured for Render (Cloudflare + Render's router); use `1` behind a single nginx |
 | `DATABASE_URL` | *(unset)* | Postgres connection string. **Set = production**, unset = local SQLite |
+| `DB_CONNECT_TIMEOUT_S` | `5` | Ceiling on establishing a connection, applied by libpq to **each** address the host resolves to — a managed Postgres name often has three, so the worst case is three times this |
 | `DB_STATEMENT_TIMEOUT_MS` | `20000` | Server-side ceiling on any one query. `connect_timeout` only bounds the handshake, so without this a database that stops making progress produces a 60 s hang and a killed worker instead of an error in the log. `0` disables |
 | `DB_PATH` | `stepcounter.db` | SQLite file, used only when `DATABASE_URL` is unset |
 | `ALERT_SILENT_HOURS` | `26` | Silence before a SILENT alert |

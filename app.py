@@ -35,7 +35,8 @@ from flask import (Flask, request, render_template, redirect, url_for,
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from db import connect, init_schema, IS_POSTGRES, STATEMENT_TIMEOUT_MS
+from db import (connect, init_schema, IS_POSTGRES, STATEMENT_TIMEOUT_MS,
+                CONNECT_TIMEOUT_S)
 
 # ----------------------------------------------------------------------------
 # Configuration (override with environment variables)
@@ -348,6 +349,7 @@ def healthz_db():
             abort(401)
 
     lines = [f"engine: {'postgres' if IS_POSTGRES else 'sqlite'}",
+             f"connect_timeout_s: {CONNECT_TIMEOUT_S} (per resolved address)",
              f"statement_timeout_ms: {STATEMENT_TIMEOUT_MS}",
              f"schema_applied: {_schema_ready}"]
     started = time.time()

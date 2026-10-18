@@ -37,6 +37,15 @@ IS_POSTGRES  = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 # what reaches the log instead. 0 disables it.
 STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "20000"))
 
+# Per-address ceiling on establishing a connection. libpq applies this to EACH
+# address the host resolves to, and a managed Postgres hostname routinely
+# resolves to three, so the real worst case is three times this value. At the
+# old 15 s that made an unreachable database cost 45 s and a worker thread --
+# long enough for the host's 5 s health check to go unanswered and the instance
+# to be declared dead. Five seconds still absorbs a cold start, because waking
+# a suspended compute happens after the connection is accepted, not before it.
+CONNECT_TIMEOUT_S = int(os.environ.get("DB_CONNECT_TIMEOUT_S", "5"))
+
 
 # ----------------------------------------------------------------------------
 # Row: sqlite3.Row-compatible row for psycopg
@@ -157,7 +166,8 @@ def connect():
         import psycopg                      # imported lazily: not needed for local SQLite
         options = _startup_options(DATABASE_URL)
         return _PostgresConnection(
-            psycopg.connect(DATABASE_URL, row_factory=_row_factory, connect_timeout=15,
+            psycopg.connect(DATABASE_URL, row_factory=_row_factory,
+                            connect_timeout=CONNECT_TIMEOUT_S,
                             options=options,
                             # psycopg auto-prepares a statement after 5 uses, which a
                             # transaction-mode pooler (Neon's "-pooler" endpoint,
