@@ -46,6 +46,7 @@ ALERT_SILENT_HOURS = float(os.environ.get("ALERT_SILENT_HOURS", "26"))
 ALERT_MIN_STEPS    = int(os.environ.get("ALERT_MIN_STEPS", "1000"))   # per-patient default/fallback
 ALERT_MIN_CADENCE  = float(os.environ.get("ALERT_MIN_CADENCE", "0"))  # per-patient default (0 = off)
 ALERT_MIN_MINUTES  = int(os.environ.get("ALERT_MIN_MINUTES", "0"))    # per-patient default (0 = off)
+ALERT_MIN_SPEED    = float(os.environ.get("ALERT_MIN_SPEED", "0"))    # m/s, per-patient default (0 = off)
 ALERT_BATTERY_MIN  = int(os.environ.get("ALERT_BATTERY_MIN", "20"))   # global battery % floor
 ALERT_CHECK_MIN    = float(os.environ.get("ALERT_CHECK_MIN", "30"))
 ALERT_COOLDOWN_H   = float(os.environ.get("ALERT_COOLDOWN_H", "12"))
@@ -53,6 +54,15 @@ ALERT_COOLDOWN_H   = float(os.environ.get("ALERT_COOLDOWN_H", "12"))
 # Battery arrives as a separate stream "<MAC>_Battery" whose "steps" value is the
 # battery percentage. We fold it back into its parent patient (see evaluate()).
 BATTERY_SUFFIX = "_Battery"
+
+# Walking speed travels as one byte per minute to keep the device's BLE dump
+# small; this is the metre-per-second value of one unit. It must stay in step
+# with Config::GAIT_SPEED_LSB in the firmware. A stored 0 is not "standing
+# still" -- it is "no gait was measured in that minute".
+GAIT_SPEED_LSB = 0.02
+# Stride-time variability arrives in 0.1 % units, shank excursion in 0.1 deg.
+GAIT_CV_LSB  = 0.1
+GAIT_EXC_LSB = 0.1
 
 # Auth / security
 SECRET_KEY    = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
@@ -155,23 +165,25 @@ def get_settings(db):
 # (steps default to ALERT_MIN_STEPS so existing behaviour is preserved).
 PATIENT_DEFAULTS = {"min_steps": ALERT_MIN_STEPS,
                     "min_cadence": ALERT_MIN_CADENCE,
-                    "min_minutes": ALERT_MIN_MINUTES}
+                    "min_minutes": ALERT_MIN_MINUTES,
+                    "min_speed": ALERT_MIN_SPEED}
 
 
 def _row_to_config(row):
-    return {"min_steps": int(row[0]), "min_cadence": float(row[1]), "min_minutes": int(row[2])}
+    return {"min_steps": int(row[0]), "min_cadence": float(row[1]),
+            "min_minutes": int(row[2]), "min_speed": float(row[3])}
 
 
 def get_patient_config(db, device_id):
     """This patient's thresholds, falling back to PATIENT_DEFAULTS when unset."""
-    row = db.execute("SELECT min_steps, min_cadence, min_minutes FROM patient_config"
-                     " WHERE device_id = ?", (device_id,)).fetchone()
+    row = db.execute("SELECT min_steps, min_cadence, min_minutes, min_speed"
+                     " FROM patient_config WHERE device_id = ?", (device_id,)).fetchone()
     return _row_to_config(row) if row else dict(PATIENT_DEFAULTS)
 
 
 def get_all_patient_configs(db):
     return {r[0]: _row_to_config(r[1:]) for r in
-            db.execute("SELECT device_id, min_steps, min_cadence, min_minutes"
+            db.execute("SELECT device_id, min_steps, min_cadence, min_minutes, min_speed"
                        " FROM patient_config").fetchall()}
 
 
@@ -195,6 +207,50 @@ def activity_metrics(minute_log):
     active = [v for v in vals if v > 0]
     avg_cadence = round(sum(active) / len(active), 1) if active else 0
     return avg_cadence, len(active)
+
+
+def parse_log(s):
+    """Comma-separated per-minute log -> list of ints. Tolerates a trailing
+    comma and any stray field, because a truncated upload must still plot."""
+    return [int(x) for x in (s or "").split(",") if x.strip().lstrip("-").isdigit()]
+
+
+def speed_series(speed_log):
+    """Per-minute walking speed in m/s, with None for the minutes the device
+    did not measure. None rather than 0 matters: the device only samples gait
+    in short bursts, so a zero would draw a flat line through every minute it
+    simply did not look at, and read as the patient having stopped."""
+    return [round(v * GAIT_SPEED_LSB, 2) if v > 0 else None for v in parse_log(speed_log)]
+
+
+def gait_metrics(row):
+    """Day-level gait figures for one reading, or None when it carries none.
+
+    Everything here except speed and stride length is measured directly from
+    the gait events; those two rest on the firmware's stride-length model and
+    are only as good as its per-patient calibration.
+    """
+    try:
+        cycles = row["gait_cycles"]
+    except (IndexError, KeyError):
+        return None                       # pre-migration row
+    if not cycles:
+        return None
+
+    stride_ms = row["stride_ms"] or 0
+    stance = row["stance_pct"] or 0
+    return {
+        "cycles": cycles,
+        "speed_ms": round((row["mean_speed"] or 0) * GAIT_SPEED_LSB, 2),
+        "stance_pct": stance,
+        "swing_pct": (100 - stance) if stance else 0,
+        "stride_ms": stride_ms,
+        "stride_cm": row["stride_cm"] or 0,
+        "stride_cv_pct": round((row["stride_cv"] or 0) * GAIT_CV_LSB, 1),
+        "excursion_deg": round((row["excursion_01"] or 0) * GAIT_EXC_LSB, 1),
+        # One stride is two steps, so cadence follows from the stride time.
+        "cadence": round(120000 / stride_ms) if stride_ms else 0,
+    }
 
 
 def save_settings(db, values):
@@ -277,6 +333,37 @@ def logout():
 # ----------------------------------------------------------------------------
 # Ingest endpoint (phone POSTs here; token-authenticated)
 # ----------------------------------------------------------------------------
+def _opt_int(src, name):
+    """A non-negative integer form field, or None when absent or unparseable.
+    None, not 0: a missing measurement and a measured zero mean different
+    things to every chart and alert downstream."""
+    raw = (src.get(name) or "").strip()
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _gait_fields(src):
+    """The optional gait half of an upload, normalised to all-None when the
+    phone sent no usable gait block."""
+    cycles = _opt_int(src, "gaitCycles")
+    if not cycles:
+        return dict.fromkeys(("speed_log", "cycles", "mean_speed", "stance_pct",
+                              "stride_ms", "stride_cv", "stride_cm", "excursion_01"))
+    return {
+        "speed_log":    src.get("speedLog", "") or None,
+        "cycles":       cycles,
+        "mean_speed":   _opt_int(src, "meanSpeed"),
+        "stance_pct":   _opt_int(src, "stancePct"),
+        "stride_ms":    _opt_int(src, "strideMs"),
+        "stride_cv":    _opt_int(src, "strideCv"),
+        "stride_cm":    _opt_int(src, "strideCm"),
+        "excursion_01": _opt_int(src, "excursion01"),
+    }
+
+
 @app.route("/", methods=["POST"])
 @app.route("/data", methods=["POST"])
 def ingest():
@@ -296,19 +383,29 @@ def ingest():
     capture_raw = src.get("captureTime", "")
     captured_at = int(capture_raw) if capture_raw.isdigit() else int(time.time() * 1000)
 
+    # Gait block. Optional on purpose: a device on step-only firmware, or a day
+    # with no walking long enough to analyse, posts none of these fields and
+    # the reading is stored exactly as it always was.
+    gait = _gait_fields(src)
+
     db = get_db()
     # Idempotent: the phone retries an upload whose response it never saw, and
     # on a sleeping free instance the server can commit the row well after the
     # client has given up waiting. DO NOTHING makes that retry a no-op instead
     # of a second copy of the day. Still a 200, so the phone clears its cache.
     db.execute(
-        "INSERT INTO readings (device_id, captured_at, total_steps, minute_log, received_at)"
-        " VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO readings (device_id, captured_at, total_steps, minute_log, received_at,"
+        " speed_log, gait_cycles, mean_speed, stance_pct, stride_ms, stride_cv,"
+        " stride_cm, excursion_01)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT (device_id, captured_at) DO NOTHING",
-        (device_id, captured_at, total_steps, minute_log, int(time.time() * 1000)),
+        (device_id, captured_at, total_steps, minute_log, int(time.time() * 1000),
+         gait["speed_log"], gait["cycles"], gait["mean_speed"], gait["stance_pct"],
+         gait["stride_ms"], gait["stride_cv"], gait["stride_cm"], gait["excursion_01"]),
     )
     db.commit()
-    return f"Success: stored {total_steps} steps for {device_id}\n"
+    walked = f" ({gait['cycles']} gait cycles)" if gait["cycles"] else ""
+    return f"Success: stored {total_steps} steps for {device_id}{walked}\n"
 
 
 # ----------------------------------------------------------------------------
@@ -323,7 +420,9 @@ def evaluate(db):
     now_ms = int(time.time() * 1000)
     rows = db.execute(
         """
-        SELECT r.device_id, r.captured_at, r.total_steps, r.minute_log
+        SELECT r.device_id, r.captured_at, r.total_steps, r.minute_log,
+               r.speed_log, r.gait_cycles, r.mean_speed, r.stance_pct,
+               r.stride_ms, r.stride_cv, r.stride_cm, r.excursion_01
         FROM readings r
         JOIN (SELECT device_id, MAX(captured_at) AS m
               FROM readings GROUP BY device_id) last
@@ -344,17 +443,25 @@ def evaluate(db):
         cfg_p = configs.get(did, PATIENT_DEFAULTS)
         bat = battery.get(did)            # None if this patient sends no battery stream
         avg_cadence, active_minutes = activity_metrics(r["minute_log"])
+        gait = gait_metrics(r)            # None when the day carries no gait block
 
         silent = (now_ms - r["captured_at"]) > silent_hours * 3600_000
         # A threshold of 0 means "metric disabled" (no alert).
         low = cfg_p["min_steps"] > 0 and r["total_steps"] < cfg_p["min_steps"]
         low_cadence = cfg_p["min_cadence"] > 0 and avg_cadence < cfg_p["min_cadence"]
         low_minutes = cfg_p["min_minutes"] > 0 and active_minutes < cfg_p["min_minutes"]
+        # Only alert on a speed that was actually measured. A day with no gait
+        # block is unknown, not slow -- SILENT already covers a device that has
+        # stopped reporting, and raising SPEED here would fire on every patient
+        # whose device runs step-only firmware.
+        low_speed = (cfg_p["min_speed"] > 0 and gait is not None
+                     and gait["speed_ms"] < cfg_p["min_speed"])
         battery_low = bat is not None and bat < battery_min
         alerts = (["SILENT"] if silent else []) \
                + (["LOW"] if low else []) \
                + (["CADENCE"] if low_cadence else []) \
                + (["MINUTES"] if low_minutes else []) \
+               + (["SPEED"] if low_speed else []) \
                + (["BATTERY"] if battery_low else [])
         summary.append({
             "device_id": did,
@@ -368,6 +475,8 @@ def evaluate(db):
             "min_steps": cfg_p["min_steps"],
             "min_cadence": cfg_p["min_cadence"],
             "min_minutes": cfg_p["min_minutes"],
+            "min_speed": cfg_p["min_speed"],
+            "gait": gait,
             "battery": bat,
             "status": "ALERT" if alerts else "OK",
             "alerts": alerts,
@@ -396,18 +505,18 @@ def dashboard():
 def patient(device_id):
     db = get_db()
     rows = db.execute(
-        "SELECT captured_at, total_steps, minute_log FROM readings"
-        " WHERE device_id = ? ORDER BY captured_at", (device_id,)).fetchall()
+        "SELECT captured_at, total_steps, minute_log, speed_log, gait_cycles,"
+        " mean_speed, stance_pct, stride_ms, stride_cv, stride_cm, excursion_01"
+        " FROM readings WHERE device_id = ? ORDER BY captured_at", (device_id,)).fetchall()
     if not rows:
         abort(404)
     audit("view.patient", target=device_id)
 
-    def parse_log(s):
-        return [int(x) for x in (s or "").split(",") if x.strip().lstrip("-").isdigit()]
-
     daily_labels = [datetime.fromtimestamp(r["captured_at"] / 1000).strftime("%m-%d %H:%M") for r in rows]
     daily_steps = [r["total_steps"] for r in rows]
     daily_minutes = [parse_log(r["minute_log"]) for r in rows]   # one per-minute array per day
+    daily_speed = [speed_series(r["speed_log"]) for r in rows]   # m/s, None where unmeasured
+    daily_gait = [gait_metrics(r) for r in rows]                 # None on days without gait
     last = rows[-1]
     avg_cadence, active_minutes = activity_metrics(last["minute_log"])
     me = next((p for p in evaluate(db) if p["device_id"] == device_id), None)
@@ -415,7 +524,8 @@ def patient(device_id):
 
     return render_template("patient.html", device_id=device_id, label=label,
                            daily_labels=daily_labels, daily_steps=daily_steps,
-                           daily_minutes=daily_minutes, avg_cadence=avg_cadence,
+                           daily_minutes=daily_minutes, daily_speed=daily_speed,
+                           daily_gait=daily_gait, avg_cadence=avg_cadence,
                            active_minutes=active_minutes, me=me)
 
 
@@ -502,18 +612,20 @@ def patient_config_page(device_id):
             min_steps   = num("min_steps", lambda x: int(float(x)))
             min_cadence = num("min_cadence", float)
             min_minutes = num("min_minutes", lambda x: int(float(x)))
+            min_speed   = num("min_speed", float)
         except ValueError:
             flash("Invalid value — thresholds must be numbers ≥ 0 (0 disables a metric).")
             return redirect(url_for("patient_config_page", device_id=device_id))
         db.execute(
-            "INSERT INTO patient_config (device_id, min_steps, min_cadence, min_minutes)"
-            " VALUES (?, ?, ?, ?)"
+            "INSERT INTO patient_config (device_id, min_steps, min_cadence, min_minutes, min_speed)"
+            " VALUES (?, ?, ?, ?, ?)"
             " ON CONFLICT(device_id) DO UPDATE SET"
             " min_steps=excluded.min_steps, min_cadence=excluded.min_cadence,"
-            " min_minutes=excluded.min_minutes",
-            (device_id, min_steps, min_cadence, min_minutes))
+            " min_minutes=excluded.min_minutes, min_speed=excluded.min_speed",
+            (device_id, min_steps, min_cadence, min_minutes, min_speed))
         db.commit()
-        audit("patient.config", target=f"{device_id} steps={min_steps} cadence={min_cadence} minutes={min_minutes}")
+        audit("patient.config", target=f"{device_id} steps={min_steps} cadence={min_cadence}"
+                                       f" minutes={min_minutes} speed={min_speed}")
         flash("Thresholds saved.")
         return redirect(url_for("patient_config_page", device_id=device_id))
 
@@ -602,6 +714,18 @@ def check_alerts():
                             f"latest day, below this patient's threshold of {p['min_cadence']} "
                             f"steps/min.\n"
                             f"Last data received: {p['last_seen']}.")
+                elif kind == "SPEED":
+                    subject = f"[StepCounter] Alert: patient {p['device_id']} low walking speed"
+                    body = (f"Patient: {p['device_id']}\n\n"
+                            f"Measured walking speed was {p['gait']['speed_ms']} m/s on the "
+                            f"latest day, below this patient's threshold of "
+                            f"{p['min_speed']} m/s.\n"
+                            f"Measured over {p['gait']['cycles']} gait cycles; stance phase "
+                            f"{p['gait']['stance_pct']}% of the gait cycle, cadence "
+                            f"{p['gait']['cadence']} steps/min.\n"
+                            f"Last data received: {p['last_seen']}.\n\n"
+                            f"Walking speed depends on the device's per-patient stride-length "
+                            f"calibration; check it before acting on an unexpected value.")
                 elif kind == "MINUTES":
                     subject = f"[StepCounter] Alert: patient {p['device_id']} low active time"
                     body = (f"Patient: {p['device_id']}\n\n"
@@ -624,7 +748,7 @@ def check_alerts():
                         "INSERT INTO alert_state (device_id, kind, notified_at) VALUES (?,?,?)"
                         " ON CONFLICT(device_id, kind) DO UPDATE SET notified_at=excluded.notified_at",
                         (p["device_id"], kind, now_ms))
-            for kind in ("SILENT", "LOW", "CADENCE", "MINUTES", "BATTERY"):
+            for kind in ("SILENT", "LOW", "CADENCE", "MINUTES", "SPEED", "BATTERY"):
                 if kind not in p["alerts"]:
                     db.execute("DELETE FROM alert_state WHERE device_id=? AND kind=?",
                                (p["device_id"], kind))

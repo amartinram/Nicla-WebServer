@@ -54,6 +54,13 @@
         <label for="min_minutes">Minimum active minutes per day</label>
         <input id="min_minutes" name="min_minutes" type="number" min="0" step="1" value="{{ cfg.min_minutes }}">
         <div class="hint">Number of minutes in the day with any walking recorded.</div>
+
+        <label for="min_speed">Minimum walking speed (m/s)</label>
+        <input id="min_speed" name="min_speed" type="number" min="0" step="0.05" value="{{ cfg.min_speed }}">
+        <div class="hint">Measured from the gait phases, not from step count. Only days on
+          which the device actually measured gait can raise this alert, so a device on
+          step-only firmware never will. Depends on the device's per-patient stride-length
+          calibration — check that before setting a tight threshold.</div>
       </div>
 
       <button type="submit">Save thresholds</button>

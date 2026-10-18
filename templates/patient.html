@@ -26,6 +26,25 @@
     .card { background:var(--card); border:1px solid var(--border); border-radius:12px;
             padding:20px; margin-bottom:24px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
     .card h2 { margin:0 0 14px; font-size:15px; font-weight:600; color:var(--muted); }
+    /* Gait cycle: one stride drawn as the timeline the clinical diagram uses,
+       stance then swing. Each segment carries its own label, so the split is
+       never conveyed by colour alone. */
+    .cycle { display:flex; height:44px; border-radius:8px; overflow:hidden; gap:2px; }
+    .cycle div { display:flex; align-items:center; justify-content:center; color:#ffffff;
+                 font-size:12px; font-weight:700; letter-spacing:.3px; white-space:nowrap;
+                 min-width:0; overflow:hidden; }
+    .cycle .stance { background:#2a78d6; }
+    .cycle .swing  { background:#eb6834; }
+    /* The axis mirrors the bar's own proportions, so "toe off" sits on the
+       stance/swing boundary rather than at the midpoint of the card. */
+    .cycle-axis { display:flex; gap:2px; color:var(--muted); font-size:11px; margin-top:6px; }
+    .cycle-axis > div { display:flex; justify-content:space-between; min-width:0; }
+    .gaitgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+                gap:14px; margin-top:20px; }
+    .gaitgrid .v { font-size:19px; font-weight:700; }
+    .gaitgrid .k { color:var(--muted); font-size:12px; }
+    .note { color:var(--muted); font-size:12px; margin:14px 0 0; line-height:1.5; }
+    .nodata { color:var(--muted); font-size:13px; padding:12px 0; }
   </style>
 </head>
 <body>
@@ -46,6 +65,8 @@
       <div class="stat"><div class="v" id="stat-steps">–</div><div class="k">steps · <span id="stat-day">selected day</span></div></div>
       <div class="stat"><div class="v" id="stat-cadence">–</div><div class="k">avg cadence (steps/min, active)</div></div>
       <div class="stat"><div class="v" id="stat-active">–</div><div class="k">active minutes</div></div>
+      <div class="stat"><div class="v" id="stat-speed">–</div><div class="k">walking speed (m/s)</div></div>
+      <div class="stat"><div class="v" id="stat-stance">–</div><div class="k">stance phase (% of cycle)</div></div>
       {% if me %}<div class="stat"><div class="v">{{ me.hours_ago }} h</div><div class="k">since last report</div></div>{% endif %}
       {% if me %}<div class="stat"><div class="v">{% if me.battery is not none %}{{ me.battery }}%{% else %}—{% endif %}</div><div class="k">battery</div></div>{% endif %}
     </div>
@@ -55,6 +76,7 @@
       Alert thresholds — steps/day: <b>{{ me.min_steps }}</b> ·
       cadence: <b>{% if me.min_cadence %}{{ me.min_cadence }}{% else %}off{% endif %}</b> ·
       active min: <b>{% if me.min_minutes %}{{ me.min_minutes }}{% else %}off{% endif %}</b> ·
+      speed: <b>{% if me.min_speed %}{{ me.min_speed }} m/s{% else %}off{% endif %}</b> ·
       <a href="/patient/{{ device_id }}/config" style="color:var(--accent)">edit in ⚙ Settings</a>
     </p>
     {% endif %}
@@ -67,6 +89,44 @@
     <div class="card">
       <h2 id="cadenceTitle">Cadence (steps per minute)</h2>
       <canvas id="minuteChart" height="90"></canvas>
+    </div>
+
+    <div class="card">
+      <h2 id="gaitTitle">Gait cycle</h2>
+      <div id="gaitBody" hidden>
+        <div class="cycle">
+          <div class="stance" id="cycleStance">STANCE</div>
+          <div class="swing" id="cycleSwing">SWING</div>
+        </div>
+        <div class="cycle-axis">
+          <div id="axStance"><span>heel strike</span><span>toe off</span></div>
+          <div id="axSwing"><span></span><span>next heel strike</span></div>
+        </div>
+        <div class="gaitgrid">
+          <div><div class="v" id="g-cadence">–</div><div class="k">cadence (steps/min)</div></div>
+          <div><div class="v" id="g-stride">–</div><div class="k">stride time (s)</div></div>
+          <div><div class="v" id="g-length">–</div><div class="k">stride length (cm)</div></div>
+          <div><div class="v" id="g-cv">–</div><div class="k">stride variability (CV %)</div></div>
+          <div><div class="v" id="g-exc">–</div><div class="k">shank excursion (°)</div></div>
+          <div><div class="v" id="g-cycles">–</div><div class="k">gait cycles analysed</div></div>
+        </div>
+        <p class="note">
+          Stance, swing, cadence, stride time and variability are measured directly from the
+          heel-strike and toe-off events in the shank gyroscope. <b>Stride length and walking
+          speed are modelled</b> from the shank excursion and depend on this patient's
+          stride-length calibration on the device — check it before reading anything into an
+          unexpected value.
+        </p>
+      </div>
+      <div id="gaitEmpty" class="nodata">No gait data for this day. The device measures gait
+        in short bursts while the patient is walking, so a day with little walking — or a
+        device running step-only firmware — records none.</div>
+    </div>
+
+    <div class="card">
+      <h2 id="speedTitle">Walking speed (m/s)</h2>
+      <canvas id="speedChart" height="90"></canvas>
+      <p class="note">Gaps are minutes the device did not measure, not minutes standing still.</p>
     </div>
 
     <form method="post" action="/patient/{{ device_id }}/delete"
@@ -82,9 +142,12 @@
     const dailyLabels  = {{ daily_labels | tojson }};
     const dailySteps   = {{ daily_steps | tojson }};
     const dailyMinutes = {{ daily_minutes | tojson }};   // one per-minute array per day
+    const dailySpeed   = {{ daily_speed | tojson }};     // m/s per minute, null = unmeasured
+    const dailyGait    = {{ daily_gait | tojson }};      // day gait summary, null = none
     let   selectedDay  = dailyMinutes.length - 1;         // default = latest day
 
     const GRID = 'rgba(15,23,42,.08)', TICK = '#64748b';
+    const SPEED = '#6250d6';
 
     // x label = time of day for each minute (index 0 = 00:00).
     const timeLabelsFor = (arr) => arr.map((_, i) => {
@@ -131,6 +194,54 @@
                           y:{ticks:{color:TICK}, grid:{color:GRID}} } }
     });
 
+    const speedChart = new Chart(document.getElementById('speedChart'), {
+      type: 'line',
+      data: { labels: timeLabelsFor(dailySpeed[selectedDay] || []),
+              datasets: [{ label:'m/s', data: dailySpeed[selectedDay] || [],
+                           borderColor:SPEED, borderWidth:2, pointRadius:0,
+                           pointHoverRadius:4, pointHoverBackgroundColor:SPEED,
+                           spanGaps:false, tension:0.2 }] },
+      options: { interaction:{mode:'index', intersect:false},
+                 plugins:{legend:{display:false},
+                          tooltip:{callbacks:{
+                            title:(items)=> items[0].label,
+                            label:(ctx)=> ctx.parsed.y == null ? 'not measured'
+                                                               : ctx.parsed.y + ' m/s'}}},
+                 scales:{ x:{title:{display:true,text:'hour of day',color:TICK},
+                             ticks:{color:TICK,autoSkip:false,maxRotation:0,
+                                    callback:(val,index)=> index % 60 === 0 ? (index/60)+'h' : ''},
+                             grid:{color:GRID}},
+                          y:{beginAtZero:true, title:{display:true,text:'m/s',color:TICK},
+                             ticks:{color:TICK}, grid:{color:GRID}} } }
+    });
+
+    // One stride drawn to scale: the stance share sets the split, so an
+    // asymmetric gait is visible as a short stance rather than read off a number.
+    function showGait(i) {
+      const g = dailyGait[i];
+      const body = document.getElementById('gaitBody');
+      const empty = document.getElementById('gaitEmpty');
+      document.getElementById('gaitTitle').textContent = 'Gait cycle on ' + dailyLabels[i];
+      if (!g) { body.hidden = true; empty.hidden = false; return; }
+      body.hidden = false; empty.hidden = true;
+
+      for (const id of ['cycleStance', 'axStance']) {
+        document.getElementById(id).style.flex = g.stance_pct;
+      }
+      for (const id of ['cycleSwing', 'axSwing']) {
+        document.getElementById(id).style.flex = g.swing_pct;
+      }
+      document.getElementById('cycleStance').textContent = 'STANCE ' + g.stance_pct + '%';
+      document.getElementById('cycleSwing').textContent  = 'SWING ' + g.swing_pct + '%';
+
+      document.getElementById('g-cadence').textContent = g.cadence;
+      document.getElementById('g-stride').textContent  = (g.stride_ms / 1000).toFixed(2);
+      document.getElementById('g-length').textContent  = g.stride_cm;
+      document.getElementById('g-cv').textContent      = g.stride_cv_pct;
+      document.getElementById('g-exc').textContent     = g.excursion_deg;
+      document.getElementById('g-cycles').textContent  = g.cycles;
+    }
+
     function showDay(i) {
       selectedDay = i;
       const arr = dailyMinutes[i] || [];
@@ -146,6 +257,17 @@
       document.getElementById('stat-cadence').textContent = m.cadence;
       document.getElementById('stat-active').textContent = m.active;
       document.getElementById('stat-day').textContent = dailyLabels[i];
+      // gait tiles, speed chart and cycle bar follow the same selected day
+      const g = dailyGait[i];
+      document.getElementById('stat-speed').textContent = g ? g.speed_ms : '–';
+      document.getElementById('stat-stance').textContent = g ? g.stance_pct + '%' : '–';
+      const sp = dailySpeed[i] || [];
+      speedChart.data.labels = timeLabelsFor(sp);
+      speedChart.data.datasets[0].data = sp;
+      speedChart.update();
+      document.getElementById('speedTitle').textContent =
+        'Walking speed on ' + dailyLabels[i] + ' (m/s)';
+      showGait(i);
       // highlight the selected bar
       dailyChart.data.datasets[0].backgroundColor =
         dailySteps.map((_, j) => j === i ? '#2563eb' : '#93c5fd');

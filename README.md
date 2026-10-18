@@ -11,6 +11,12 @@ Drop-in replacement for the original Google Apps Script test backend: the phone
 POSTs the same form fields (`sheetName`, `steps`, `logData`, `captureTime`), so
 only the app's `SERVER_URL` changes.
 
+A device running gait firmware adds a second, **optional** set of fields to the
+same POST — `speedLog`, `gaitCycles`, `meanSpeed`, `stancePct`, `strideMs`,
+`strideCv`, `strideCm`, `excursion01`. A phone or device that sends none of them
+is stored exactly as before, so step-only and gait devices can report side by
+side.
+
 > **Scope.** This is a **proof of concept**. It implements security/privacy
 > measures *aligned with* GDPR and medical-device software practice (IEC 62304,
 > ISO 13485), but it is **not a certified medical device** — formal certification
@@ -34,10 +40,21 @@ only the app's `SERVER_URL` changes.
   phone clears its retry cache.
 - **Dashboard** (`/`) — one card per patient: status, latest daily steps, last seen.
 - **Patient view** (`/patient/<mac>`) — daily-steps bar chart, per-minute cadence
-  line chart, summary stats, GDPR delete.
-- **Alerting** — background checker raises **SILENT** (no data > `ALERT_SILENT_HOURS`)
-  and **LOW** (latest daily steps < `ALERT_MIN_STEPS`); shown on the dashboard and
-  emailed if SMTP is configured.
+  line chart, per-minute **walking-speed** chart, **gait-cycle** stance/swing
+  breakdown, summary stats, GDPR delete.
+- **Gait & speed** — the device measures gait in short bursts while the patient
+  walks and reports, per day: walking speed, stance and swing phase as a share of
+  the gait cycle, cadence, stride time, stride length and stride-time
+  variability. Stance, swing, cadence, stride time and variability are measured
+  directly from the heel-strike and toe-off events; **speed and stride length are
+  modelled** and depend on the device's per-patient stride-length calibration.
+  Days with no gait data (too little walking, or step-only firmware) simply show
+  none — they are never treated as a measured zero.
+- **Alerting** — background checker raises **SILENT** (no data > `ALERT_SILENT_HOURS`),
+  **LOW** (latest daily steps < `ALERT_MIN_STEPS`), **CADENCE**, **MINUTES**,
+  **SPEED** (measured walking speed < the patient's threshold) and **BATTERY**;
+  shown on the dashboard and emailed if SMTP is configured. SPEED only fires on a
+  day that actually carries a gait measurement.
 
 ## Run locally
 

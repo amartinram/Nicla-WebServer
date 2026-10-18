@@ -149,7 +149,20 @@ CREATE TABLE IF NOT EXISTS readings (
     captured_at BIGINT  NOT NULL,
     total_steps INTEGER NOT NULL,
     minute_log  TEXT    NOT NULL,
-    received_at BIGINT  NOT NULL
+    received_at BIGINT  NOT NULL,
+    -- Gait/speed block, all nullable. A reading has none of this when the
+    -- device runs step-only firmware, or when the day held no walking long
+    -- enough to analyse. Units match the firmware's BLE record so nothing is
+    -- re-scaled in transit: speeds in 0.02 m/s, stride_cv in 0.1 %,
+    -- excursion_01 in 0.1 deg.
+    speed_log    TEXT,
+    gait_cycles  INTEGER,
+    mean_speed   INTEGER,
+    stance_pct   INTEGER,
+    stride_ms    INTEGER,
+    stride_cv    INTEGER,
+    stride_cm    INTEGER,
+    excursion_01 INTEGER
 );
 -- The (device_id, captured_at) index is created in init_schema() instead of
 -- here, because it must be UNIQUE and existing rows have to be deduplicated
@@ -179,7 +192,8 @@ CREATE TABLE IF NOT EXISTS patient_config (
     device_id   TEXT PRIMARY KEY,
     min_steps   INTEGER NOT NULL DEFAULT 1000,
     min_cadence REAL    NOT NULL DEFAULT 0,
-    min_minutes INTEGER NOT NULL DEFAULT 0
+    min_minutes INTEGER NOT NULL DEFAULT 0,
+    min_speed   REAL    NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS device_alias (
@@ -188,9 +202,22 @@ CREATE TABLE IF NOT EXISTS device_alias (
 );
 """
 
-# Older deployments had a patient_config with only min_steps.
-_MIGRATIONS = [("min_cadence", "REAL NOT NULL DEFAULT 0"),
-               ("min_minutes", "INTEGER NOT NULL DEFAULT 0")]
+# Columns added after a deployment already existed, as {table: [(col, decl)]}.
+# Every entry must be either nullable or have a DEFAULT, because it is applied
+# to a table that already holds rows.
+_MIGRATIONS = {
+    "patient_config": [("min_cadence", "REAL NOT NULL DEFAULT 0"),
+                       ("min_minutes", "INTEGER NOT NULL DEFAULT 0"),
+                       ("min_speed",   "REAL NOT NULL DEFAULT 0")],
+    "readings":       [("speed_log",    "TEXT"),
+                       ("gait_cycles",  "INTEGER"),
+                       ("mean_speed",   "INTEGER"),
+                       ("stance_pct",   "INTEGER"),
+                       ("stride_ms",    "INTEGER"),
+                       ("stride_cv",    "INTEGER"),
+                       ("stride_cm",    "INTEGER"),
+                       ("excursion_01", "INTEGER")],
+}
 
 # Enforces one reading per device per capture time, making ingest idempotent.
 UNIQUE_READING_INDEX = "uq_readings_device_capture"
@@ -212,16 +239,18 @@ def init_schema(seed_settings=None):
     try:
         if IS_POSTGRES:
             conn.executescript(_ddl_to_postgres(SCHEMA))
-            for column, decl in _MIGRATIONS:
-                conn.execute("ALTER TABLE patient_config ADD COLUMN IF NOT EXISTS "
-                             f"{column} {_ddl_to_postgres(decl)}")
+            for table, columns in _MIGRATIONS.items():
+                for column, decl in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+                                 f"{column} {_ddl_to_postgres(decl)}")
         else:
             conn.executescript(SCHEMA)
-            existing = {r[1] for r in
-                        conn.execute("PRAGMA table_info(patient_config)").fetchall()}
-            for column, decl in _MIGRATIONS:
-                if column not in existing:
-                    conn.execute(f"ALTER TABLE patient_config ADD COLUMN {column} {decl}")
+            for table, columns in _MIGRATIONS.items():
+                existing = {r[1] for r in
+                            conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                for column, decl in columns:
+                    if column not in existing:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
         # One reading per device per capture time. Without this a client that
         # retried after a timeout -- the server having already committed the

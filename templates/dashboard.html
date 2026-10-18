@@ -45,6 +45,7 @@
     <p class="legend">
       Alert rules: <b>SILENT</b> if no data for &gt; {{ silent_hours }} h ·
       <b>LOW</b> if latest daily steps &lt; each patient's own threshold ·
+      <b>SPEED</b> if measured walking speed &lt; each patient's own threshold ·
       <b>BATTERY</b> if battery &lt; {{ battery_min }}%.
     </p>
     {% if patients %}
@@ -58,6 +59,10 @@
         {% if p.label != p.device_id %}<div class="sub" style="word-break:break-all">{{ p.device_id }}</div>{% endif %}
         <div class="steps">{{ p.total_steps }}</div>
         <div class="sub">steps · last day (target {{ p.min_steps }})</div>
+        <div class="sub">
+          {% if p.gait %}walking speed <b>{{ p.gait.speed_ms }} m/s</b> ·
+            stance {{ p.gait.stance_pct }}%{% else %}walking speed —{% endif %}
+        </div>
         <div class="sub">battery {% if p.battery is not none %}{{ p.battery }}%{% else %}—{% endif %} ·
           last seen {{ p.last_seen }} ({{ p.hours_ago }} h ago)</div>
         {% if p.alerts %}
