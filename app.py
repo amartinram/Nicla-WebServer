@@ -125,23 +125,35 @@ if not INGEST_TOKEN:
 # Database
 # ----------------------------------------------------------------------------
 _schema_ready = False
+_schema_last_try = 0.0
 _schema_lock = threading.Lock()
+SCHEMA_RETRY_SECONDS = 60
 
 
 def ensure_schema():
     """Apply the schema once per process, on whichever request gets there first.
 
-    Retried on every connection until it succeeds, so a database that was down
-    at boot needs no restart once it comes back.
+    Never blocks and never retries in a tight loop. Both matter when the
+    database is the thing that is broken: a blocking lock makes every request
+    queue behind another request's doomed attempt, so one slow failure becomes
+    a worker with all its threads parked, which stops /healthz being *served*
+    even though it needs no database -- and that is what the host reads as a
+    dead instance. Failing fast and letting the request surface its own error
+    keeps the service diagnosable instead of merely absent.
     """
-    global _schema_ready
+    global _schema_ready, _schema_last_try
     if _schema_ready:
         return
-    with _schema_lock:
-        if _schema_ready:
+    if not _schema_lock.acquire(blocking=False):
+        return                      # another thread is already trying; don't queue
+    try:
+        if _schema_ready or (time.time() - _schema_last_try) < SCHEMA_RETRY_SECONDS:
             return
+        _schema_last_try = time.time()
         init_schema(SETTINGS_DEFAULTS)
         _schema_ready = True
+    finally:
+        _schema_lock.release()
 
 
 def get_db():
