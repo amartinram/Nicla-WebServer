@@ -22,19 +22,35 @@ DAY_MS = 86_400_000
 MIN_PER_DAY = 1440
 
 
-def day_log(target_steps):
-    """Build a 1440-value per-minute CSV that sums to ~target_steps,
-    concentrated in plausible waking-hour bursts."""
+def day_log(target_steps, cadence=110):
+    """Build a 1440-value per-minute CSV that sums to ~target_steps, made of
+    walks the way a day really has them: many of under a minute, some of a few
+    minutes, a few sustained ones. Each walk runs at the patient's cadence, so
+    the minutes inside a long walk hold `cadence` steps while its first and last
+    minute -- only partly walked -- hold fewer."""
     log = [0] * MIN_PER_DAY
     remaining = target_steps
     # Activity windows (minute-of-day ranges): morning, midday, evening.
     windows = [(420, 540), (780, 900), (1080, 1260)]
-    while remaining > 0:
+    for _ in range(2000):                       # bounded: a full day may not fit
+        if remaining <= 0:
+            break
+        kind = random.choices(("short", "medium", "long"), weights=(6, 3, 1))[0]
+        seconds = {"short": random.randint(10, 50),
+                   "medium": random.randint(90, 230),
+                   "long": random.randint(300, 900)}[kind]
+        seconds = min(seconds, max(10, round(remaining * 60 / cadence)))
         lo, hi = random.choice(windows)
-        m = random.randint(lo, hi)
-        burst = min(remaining, random.randint(20, 110))  # steps/min within human cadence
-        log[m] = min(255, log[m] + burst)
-        remaining -= burst
+        start = random.randint(lo * 60, hi * 60)            # second of day
+        first, last = start // 60, (start + seconds - 1) // 60
+        # Keep a resting minute either side, so two walks never merge into one.
+        if any(log[max(0, first - 1):last + 2]):
+            continue
+        for m in range(first, last + 1):
+            walked = min(start + seconds, (m + 1) * 60) - max(start, m * 60)
+            steps = round(cadence * random.uniform(0.96, 1.04) * walked / 60)
+            log[m] = min(255, max(1, steps))
+            remaining -= log[m]
     return ",".join(str(v) for v in log), sum(log)
 
 
@@ -79,7 +95,7 @@ def insert_patient(db, device_id, daily_targets, last_offset_days=0,
     for i, target in enumerate(daily_targets):
         # captured_at walks from oldest to newest; last_offset_days ages the newest.
         captured = now - (last_offset_days + (n - 1 - i)) * DAY_MS
-        csv_log, total = day_log(target)
+        csv_log, total = day_log(target, cadence)
         g = gait_day(csv_log, speed_ms, stance_pct, cadence) if speed_ms else None
         db.execute(
             "INSERT INTO readings (device_id, captured_at, total_steps, minute_log, received_at,"
@@ -107,8 +123,10 @@ def main():
     # looks like next to the healthy one above.
     insert_patient(db, "AA_BB_CC_DD_EE_02", [3000, 2800, 2500, 1900, 1200, 700, 300],
                    speed_ms=0.62, stance_pct=53, cadence=85)
-    # No gait block at all -- step-only firmware.
-    insert_patient(db, "AA_BB_CC_DD_EE_03", [3500, 3300, 3600], last_offset_days=4)
+    # No gait block at all -- step-only firmware, so its cadence can only be
+    # estimated from the step log.
+    insert_patient(db, "AA_BB_CC_DD_EE_03", [3500, 3300, 3600], last_offset_days=4,
+                   cadence=95)
 
     db.commit()
     db.close()

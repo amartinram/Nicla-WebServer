@@ -39,9 +39,20 @@ side.
 - **Ingest** (`POST /` or `/data`) — token-authenticated; returns HTTP 200 so the
   phone clears its retry cache.
 - **Dashboard** (`/`) — one card per patient: status, latest daily steps, last seen.
-- **Patient view** (`/patient/<mac>`) — daily-steps bar chart, per-minute cadence
-  line chart, per-minute **walking-speed** chart, **gait-cycle** stance/swing
-  breakdown, summary stats, GDPR delete.
+- **Patient view** (`/patient/<mac>`) — daily-steps bar chart, steps-per-minute
+  line chart, **walking bouts**, per-minute **walking-speed** chart, **gait-cycle**
+  stance/swing breakdown, summary stats, GDPR delete.
+- **Walking bouts** — a bout is a run of consecutive minutes with steps. Each
+  day's bouts are sorted into three lengths — **1 min or less**, **2 to 4 min**,
+  **5 min or more** — with the number of bouts, minutes, steps and share of
+  walking time in each, and the steps-per-minute chart coloured to match. The
+  limits are `BOUT_SHORT_MAX` and `BOUT_LONG_MIN` in `app.py`.
+- **Cadence** — one figure per day, the same in the summary tile, the gait card
+  and the CADENCE alert: steps per minute *while walking*. It comes from the
+  measured stride time when the day has gait data; otherwise it is estimated
+  from the fully walked minutes of bouts lasting 3 min or more (a bout's first
+  and last minute are only partly walked, so they are left out). A day with
+  neither shows no cadence rather than an average diluted by partial minutes.
 - **Gait & speed** — the device measures gait in short bursts while the patient
   walks and reports, per day: walking speed, stance and swing phase as a share of
   the gait cycle, cadence, stride time, stride length and stride-time
@@ -54,7 +65,8 @@ side.
   **LOW** (latest daily steps < `ALERT_MIN_STEPS`), **CADENCE**, **MINUTES**,
   **SPEED** (measured walking speed < the patient's threshold) and **BATTERY**;
   shown on the dashboard and emailed if SMTP is configured. SPEED only fires on a
-  day that actually carries a gait measurement.
+  day that actually carries a gait measurement, and CADENCE only on a day whose
+  cadence could be read.
 
 ## Run locally
 

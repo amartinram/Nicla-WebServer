@@ -65,6 +65,22 @@ GAIT_SPEED_LSB = 0.02
 GAIT_CV_LSB  = 0.1
 GAIT_EXC_LSB = 0.1
 
+# A walking bout is a run of consecutive minutes with steps recorded. Bouts are
+# sorted by how long they last, because the length says what kind of walking it
+# was: a single minute is a few steps around the room, a handful of minutes is
+# moving about the house, five or more is sustained walking. The log has one
+# value per minute, so a bout's length is a whole number of minutes.
+BOUT_SHORT_MAX = 1      # minutes: at most this long -> "short"
+BOUT_LONG_MIN  = 5      # minutes: at least this long -> "long"; between -> "medium"
+BOUT_GROUPS = (
+    {"key": "short",  "label": "1 min or less"},
+    {"key": "medium", "label": f"{BOUT_SHORT_MAX + 1} to {BOUT_LONG_MIN - 1} min"},
+    {"key": "long",   "label": f"{BOUT_LONG_MIN} min or more"},
+)
+# The first and last minute of a bout are only partly walked, so a bout needs at
+# least this many minutes before it holds one that was walked from start to end.
+STEADY_BOUT_MIN = 3
+
 # Auth / security
 SECRET_KEY    = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 DOCTOR_USER   = os.environ.get("DOCTOR_USER", "doctor")
@@ -234,19 +250,78 @@ def known_devices(db):
     return [r[0] for r in rows if not r[0].endswith(BATTERY_SUFFIX)]
 
 
-def activity_metrics(minute_log):
-    """(avg_cadence over active minutes, count of active minutes) from a
-    comma-separated per-minute step log."""
-    vals = [int(x) for x in (minute_log or "").split(",") if x.strip().lstrip("-").isdigit()]
-    active = [v for v in vals if v > 0]
-    avg_cadence = round(sum(active) / len(active), 1) if active else 0
-    return avg_cadence, len(active)
-
-
 def parse_log(s):
     """Comma-separated per-minute log -> list of ints. Tolerates a trailing
     comma and any stray field, because a truncated upload must still plot."""
     return [int(x) for x in (s or "").split(",") if x.strip().lstrip("-").isdigit()]
+
+
+def walking_bouts(minutes):
+    """Runs of consecutive minutes with steps, as (start_minute, length) pairs."""
+    bouts, start = [], None
+    for i, v in enumerate(minutes):
+        if v > 0 and start is None:
+            start = i
+        elif v <= 0 and start is not None:
+            bouts.append((start, i - start))
+            start = None
+    if start is not None:
+        bouts.append((start, len(minutes) - start))
+    return bouts
+
+
+def bout_group(length):
+    """Index into BOUT_GROUPS for a bout lasting `length` minutes."""
+    if length <= BOUT_SHORT_MAX:
+        return 0
+    return 2 if length >= BOUT_LONG_MIN else 1
+
+
+def day_activity(minutes, gait=None):
+    """Everything the step log says about one day: active minutes, the walking
+    bouts and their three duration groups, and the day's cadence.
+
+    Cadence is defined once, here, and every view and alert reads it from this
+    result. It means steps per minute *while walking*. The plain average over
+    active minutes is not that: a minute in which the patient walked for twenty
+    seconds counts as a third of their real cadence, so the average sinks with
+    every short walk. The day's cadence is therefore, in order of preference:
+
+      * "gait"  -- taken from the measured stride time, when the day has gait data;
+      * "steps" -- the mean of the fully walked minutes, i.e. the minutes inside
+                   a bout of STEADY_BOUT_MIN or more, leaving out its partly
+                   walked first and last minute;
+      * None    -- neither exists. The day had only short walks and no gait
+                   burst, and a cadence cannot be read from partial minutes.
+    """
+    bouts = walking_bouts(minutes)
+    groups = [{"key": g["key"], "label": g["label"], "bouts": 0, "minutes": 0, "steps": 0}
+              for g in BOUT_GROUPS]
+    steady = []
+    for start, length in bouts:
+        g = groups[bout_group(length)]
+        g["bouts"] += 1
+        g["minutes"] += length
+        g["steps"] += sum(minutes[start:start + length])
+        if length >= STEADY_BOUT_MIN:
+            steady.extend(minutes[start + 1:start + length - 1])
+    for g in groups:
+        g["steps_per_min"] = round(g["steps"] / g["minutes"]) if g["minutes"] else None
+
+    if gait and gait["cadence"]:
+        cadence, source = gait["cadence"], "gait"
+    elif steady:
+        cadence, source = round(sum(steady) / len(steady)), "steps"
+    else:
+        cadence, source = None, None
+
+    return {
+        "active_minutes": sum(length for _, length in bouts),
+        "bouts": [[start, length, bout_group(length)] for start, length in bouts],
+        "groups": groups,
+        "cadence": cadence,
+        "cadence_source": source,
+    }
 
 
 def speed_series(speed_log):
@@ -522,13 +597,16 @@ def evaluate(db):
             continue                      # folded into its parent patient below
         cfg_p = configs.get(did, PATIENT_DEFAULTS)
         bat = battery.get(did)            # None if this patient sends no battery stream
-        avg_cadence, active_minutes = activity_metrics(r["minute_log"])
         gait = gait_metrics(r)            # None when the day carries no gait block
+        activity = day_activity(parse_log(r["minute_log"]), gait)
+        cadence, active_minutes = activity["cadence"], activity["active_minutes"]
 
         silent = (now_ms - r["captured_at"]) > silent_hours * 3600_000
         # A threshold of 0 means "metric disabled" (no alert).
         low = cfg_p["min_steps"] > 0 and r["total_steps"] < cfg_p["min_steps"]
-        low_cadence = cfg_p["min_cadence"] > 0 and avg_cadence < cfg_p["min_cadence"]
+        # Like speed below: a day with no readable cadence is unknown, not slow.
+        low_cadence = (cfg_p["min_cadence"] > 0 and cadence is not None
+                       and cadence < cfg_p["min_cadence"])
         low_minutes = cfg_p["min_minutes"] > 0 and active_minutes < cfg_p["min_minutes"]
         # Only alert on a speed that was actually measured. A day with no gait
         # block is unknown, not slow -- SILENT already covers a device that has
@@ -550,7 +628,8 @@ def evaluate(db):
             "last_seen": datetime.fromtimestamp(r["captured_at"] / 1000).strftime("%Y-%m-%d %H:%M"),
             "hours_ago": round((now_ms - r["captured_at"]) / 3600_000, 1),
             "total_steps": r["total_steps"],
-            "avg_cadence": avg_cadence,
+            "cadence": cadence,
+            "cadence_source": activity["cadence_source"],
             "active_minutes": active_minutes,
             "min_steps": cfg_p["min_steps"],
             "min_cadence": cfg_p["min_cadence"],
@@ -597,16 +676,16 @@ def patient(device_id):
     daily_minutes = [parse_log(r["minute_log"]) for r in rows]   # one per-minute array per day
     daily_speed = [speed_series(r["speed_log"]) for r in rows]   # m/s, None where unmeasured
     daily_gait = [gait_metrics(r) for r in rows]                 # None on days without gait
-    last = rows[-1]
-    avg_cadence, active_minutes = activity_metrics(last["minute_log"])
+    # Bouts, active minutes and the day's one cadence figure, per day.
+    daily_activity = [day_activity(m, g) for m, g in zip(daily_minutes, daily_gait)]
     me = next((p for p in evaluate(db) if p["device_id"] == device_id), None)
     label = get_aliases(db).get(device_id) or device_id
 
     return render_template("patient.html", device_id=device_id, label=label,
                            daily_labels=daily_labels, daily_steps=daily_steps,
                            daily_minutes=daily_minutes, daily_speed=daily_speed,
-                           daily_gait=daily_gait, avg_cadence=avg_cadence,
-                           active_minutes=active_minutes, me=me)
+                           daily_gait=daily_gait, daily_activity=daily_activity,
+                           bout_groups=BOUT_GROUPS, me=me)
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -791,9 +870,9 @@ def check_alerts():
                 elif kind == "CADENCE":
                     subject = f"[StepCounter] Alert: patient {p['device_id']} low cadence"
                     body = (f"Patient: {p['device_id']}\n\n"
-                            f"Average walking cadence was {p['avg_cadence']} steps/min on the "
-                            f"latest day, below this patient's threshold of {p['min_cadence']} "
-                            f"steps/min.\n"
+                            f"Walking cadence was {p['cadence']} steps/min on the latest day "
+                            f"({'measured from the gait cycle' if p['cadence_source'] == 'gait' else 'estimated from step counts'}), "
+                            f"below this patient's threshold of {p['min_cadence']} steps/min.\n"
                             f"Last data received: {p['last_seen']}.")
                 elif kind == "SPEED":
                     subject = f"[StepCounter] Alert: patient {p['device_id']} low walking speed"
