@@ -45,11 +45,12 @@
     .gaitgrid .k { color:var(--muted); font-size:12px; }
     .note { color:var(--muted); font-size:12px; margin:14px 0 0; line-height:1.5; }
     .nodata { color:var(--muted); font-size:13px; padding:12px 0; }
-    /* Walking bouts by duration. The three groups are ordered, so they share one
-       hue stepped light to dark; every use also carries the group's label. */
-    .bout-0 { background:#86b6ef; }
-    .bout-1 { background:#2a78d6; }
-    .bout-2 { background:#104281; }
+    /* Walking bouts by active time. Three distinct hues, each >= 3:1 against the
+       white page (WCAG AA for graphics) and kept apart under colour-blindness;
+       every use also carries the group's label. Keep in step with BOUT below. */
+    .bout-0 { background:#d95926; }
+    .bout-1 { background:#199e70; }
+    .bout-2 { background:#2a78d6; }
     .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; }
     .legend { display:flex; gap:18px; flex-wrap:wrap; color:var(--muted); font-size:12px;
               margin-top:10px; }
@@ -109,7 +110,7 @@
       <h2 id="minuteTitle">Steps per minute</h2>
       <canvas id="minuteChart" height="90"></canvas>
       <div class="legend">
-        <span>Walking bout length:</span>
+        <span>Active time:</span>
         {% for g in bout_groups %}<span><span class="sw bout-{{ loop.index0 }}"></span>{{ g.label }}</span>{% endfor %}
       </div>
     </div>
@@ -123,8 +124,9 @@
         <div class="tablewrap">
         <table class="bouttable">
           <thead><tr>
-            <th>Bout length</th><th>Bouts</th><th>Minutes</th>
-            <th>Share of walking time</th><th>Steps</th><th>Steps per minute</th>
+            <th>Active time</th><th>Bouts</th><th>Minutes</th>
+            <th>Share of walking time</th><th>Steps</th>
+            <th>Steps per bout<br>mean ± SD</th><th>Cadence (steps/min)<br>mean ± SD</th>
           </tr></thead>
           <tbody>
             {% for g in bout_groups %}<tr>
@@ -133,20 +135,24 @@
               <td id="bout{{ loop.index0 }}-min">–</td>
               <td id="bout{{ loop.index0 }}-share">–</td>
               <td id="bout{{ loop.index0 }}-steps">–</td>
-              <td id="bout{{ loop.index0 }}-spm">–</td>
+              <td id="bout{{ loop.index0 }}-stepsd">–</td>
+              <td id="bout{{ loop.index0 }}-cad">–</td>
             </tr>{% endfor %}
           </tbody>
           <tfoot><tr>
             <td>All walking</td><td id="boutAll-n">–</td><td id="boutAll-min">–</td>
-            <td>100%</td><td id="boutAll-steps">–</td><td></td>
+            <td>100%</td><td id="boutAll-steps">–</td>
+            <td id="boutAll-stepsd">–</td><td id="boutAll-cad">–</td>
           </tr></tfoot>
         </table>
         </div>
         <p class="note">
           A bout is a run of consecutive minutes with steps recorded; the bar shows how the
-          day's walking time splits between the three lengths. Steps per minute is low in
-          the short bouts because those minutes are only partly walked — it is not a slower
-          cadence, which is why the day's cadence is never an average over them.
+          day's walking time splits between the three active times. Cadence here is the mean
+          and standard deviation of the step count of every minute walked in that group;
+          steps per bout is the same over each bout's total. Cadence reads low in the short
+          bouts because those minutes are only partly walked — it is not slower walking,
+          which is why the day's cadence at the top is never an average over them.
         </p>
       </div>
       <div id="boutEmpty" class="nodata">No walking recorded on this day.</div>
@@ -217,7 +223,7 @@
     // the plot solid grey and hides the lighter marks. Draw the hour lines only.
     const HOUR_GRID = (ctx) => ctx.index % 60 === 0 ? GRID : 'transparent';
     const SPEED = '#6250d6';
-    const BOUT = ['#86b6ef', '#2a78d6', '#104281'];      // short, medium, long
+    const BOUT = ['#d95926', '#199e70', '#2a78d6'];      // short, medium, long (match .bout-N)
     const IDLE = '#cbd5e1';                              // the flat line between bouts
     const CADENCE_SOURCE = { gait: 'measured from gait', steps: 'estimated from step counts' };
 
@@ -333,6 +339,9 @@
       document.getElementById('g-cycles').textContent  = g.cycles;
     }
 
+    // "mean ± SD"; the SD is left off when one sample leaves it undefined.
+    const meanSd = (m, sd) => m == null ? '–' : (sd == null ? String(m) : m + ' ± ' + sd);
+
     // The day's walking split into the three bout lengths: a bar for the share
     // of walking time, and the table for the figures behind it.
     function showBouts(i) {
@@ -352,15 +361,17 @@
         document.getElementById('bout' + k + '-n').textContent     = g.bouts;
         document.getElementById('bout' + k + '-min').textContent   = g.minutes;
         document.getElementById('bout' + k + '-share').textContent = pct(g.minutes);
-        document.getElementById('bout' + k + '-steps').textContent = g.steps;
-        document.getElementById('bout' + k + '-spm').textContent   = g.steps_per_min ?? '–';
+        document.getElementById('bout' + k + '-steps').textContent  = g.steps;
+        document.getElementById('bout' + k + '-stepsd').textContent = meanSd(g.steps_mean, g.steps_sd);
+        document.getElementById('bout' + k + '-cad').textContent    = meanSd(g.cadence_mean, g.cadence_sd);
       });
       document.getElementById('boutBar').setAttribute('aria-label',
         'Share of walking time: ' + a.groups.map(g => g.label + ' ' + pct(g.minutes)).join(', '));
       document.getElementById('boutAll-n').textContent     = a.bouts.length;
       document.getElementById('boutAll-min').textContent   = total;
-      document.getElementById('boutAll-steps').textContent =
-        a.groups.reduce((s, g) => s + g.steps, 0);
+      document.getElementById('boutAll-steps').textContent  = a.overall.steps;
+      document.getElementById('boutAll-stepsd').textContent = meanSd(a.overall.steps_mean, a.overall.steps_sd);
+      document.getElementById('boutAll-cad').textContent    = meanSd(a.overall.cadence_mean, a.overall.cadence_sd);
     }
 
     function showDay(i) {

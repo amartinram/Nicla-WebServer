@@ -24,6 +24,7 @@ sheetName / steps / logData / captureTime.
 import os
 import time
 import smtplib
+import statistics
 import secrets
 import threading
 from functools import wraps
@@ -277,6 +278,17 @@ def bout_group(length):
     return 2 if length >= BOUT_LONG_MIN else 1
 
 
+def mean_or_none(xs):
+    """Mean rounded to a whole number, or None for no samples."""
+    return round(statistics.fmean(xs)) if xs else None
+
+
+def sd_or_none(xs):
+    """Sample standard deviation rounded to a whole number, or None when there
+    are fewer than two samples and the spread is undefined."""
+    return round(statistics.stdev(xs)) if len(xs) > 1 else None
+
+
 def day_activity(minutes, gait=None):
     """Everything the step log says about one day: active minutes, the walking
     bouts and their three duration groups, and the day's cadence.
@@ -295,18 +307,28 @@ def day_activity(minutes, gait=None):
                    burst, and a cadence cannot be read from partial minutes.
     """
     bouts = walking_bouts(minutes)
-    groups = [{"key": g["key"], "label": g["label"], "bouts": 0, "minutes": 0, "steps": 0}
-              for g in BOUT_GROUPS]
+    # Per group, the samples behind its mean ± SD figures: the step count of
+    # every minute walked (cadence) and the step total of every bout (steps).
+    per_minute = [[] for _ in BOUT_GROUPS]
+    per_bout = [[] for _ in BOUT_GROUPS]
     steady = []
     for start, length in bouts:
-        g = groups[bout_group(length)]
-        g["bouts"] += 1
-        g["minutes"] += length
-        g["steps"] += sum(minutes[start:start + length])
+        k = bout_group(length)
+        per_minute[k].extend(minutes[start:start + length])
+        per_bout[k].append(sum(minutes[start:start + length]))
         if length >= STEADY_BOUT_MIN:
             steady.extend(minutes[start + 1:start + length - 1])
-    for g in groups:
-        g["steps_per_min"] = round(g["steps"] / g["minutes"]) if g["minutes"] else None
+
+    def summary(key, label, mins, steps):
+        return {"key": key, "label": label, "bouts": len(steps),
+                "minutes": len(mins), "steps": sum(steps),
+                "cadence_mean": mean_or_none(mins), "cadence_sd": sd_or_none(mins),
+                "steps_mean": mean_or_none(steps), "steps_sd": sd_or_none(steps)}
+
+    groups = [summary(g["key"], g["label"], per_minute[k], per_bout[k])
+              for k, g in enumerate(BOUT_GROUPS)]
+    overall = summary("all", "All walking",
+                      [v for m in per_minute for v in m], [v for b in per_bout for v in b])
 
     if gait and gait["cadence"]:
         cadence, source = gait["cadence"], "gait"
@@ -319,6 +341,7 @@ def day_activity(minutes, gait=None):
         "active_minutes": sum(length for _, length in bouts),
         "bouts": [[start, length, bout_group(length)] for start, length in bouts],
         "groups": groups,
+        "overall": overall,
         "cadence": cadence,
         "cadence_source": source,
     }

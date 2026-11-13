@@ -43,10 +43,11 @@ side.
   line chart, **walking bouts**, per-minute **walking-speed** chart, **gait-cycle**
   stance/swing breakdown, summary stats, GDPR delete.
 - **Walking bouts** — a bout is a run of consecutive minutes with steps. Each
-  day's bouts are sorted into three lengths — **1 min or less**, **2 to 4 min**,
-  **5 min or more** — with the number of bouts, minutes, steps and share of
-  walking time in each, and the steps-per-minute chart coloured to match. The
-  limits are `BOUT_SHORT_MAX` and `BOUT_LONG_MIN` in `app.py`.
+  day's bouts are sorted into three active times — **1 min or less**, **2 to 4
+  min**, **5 min or more** — with the number of bouts, minutes, steps and share
+  of walking time in each, plus mean ± SD of steps per bout and of cadence (the
+  step count of each minute walked), and the steps-per-minute chart coloured to
+  match. The limits are `BOUT_SHORT_MAX` and `BOUT_LONG_MIN` in `app.py`.
 - **Cadence** — one figure per day, the same in the summary tile, the gait card
   and the CADENCE alert: steps per minute *while walking*. It comes from the
   measured stride time when the day has gait data; otherwise it is estimated
