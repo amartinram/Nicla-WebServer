@@ -66,7 +66,7 @@
           {% if p.gait %}{{ _("walking speed") }} <b>{{ p.gait.speed_ms|num }} m/s</b> ·
             {{ _("stance") }} {{ p.gait.stance_pct }}%{% else %}{{ _("walking speed") }} —{% endif %}
         </div>
-        <div class="sub">{{ _("battery") }} {% if p.battery is not none %}{{ p.battery }}%{% else %}—{% endif %} ·
+        <div class="sub">{{ _("battery") }} {% if p.battery is not none %}≈{{ p.battery }}% ({{ p.battery_v|num(2) }} V){% else %}—{% endif %} ·
           {{ _("last seen {when} ({hours} h ago)", when=dt(p.last_seen_ms), hours=p.hours_ago|num) }}</div>
         {% if p.alerts %}
         <div class="tags">

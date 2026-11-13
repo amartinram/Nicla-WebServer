@@ -29,7 +29,10 @@ side.
 | Doctor-only access | Session **login** required on every data view (`DOCTOR_USER` + hashed password) |
 | Authenticated ingest | Phone must include a secret **`INGEST_TOKEN`** in its `SERVER_URL` (`?token=…`) — no app code change |
 | Pseudonymisation (GDPR) | Stores **only the device MAC + steps** — no names/PII. The MAC↔patient mapping stays with the clinician **offline**, never in the cloud. (A MAC is a *pseudonym*, still personal data.) |
-| Transport security | **HTTPS enforced** (behind the host's TLS proxy) + secure cookies |
+| Transport security | **HTTPS enforced** (behind the host's TLS proxy) + secure cookies + HSTS |
+| Session abuse | **CSRF token** on every form, **login throttle** (8 failures / 10 min per address), login redirects confined to this site |
+| Browser hardening | Content-Security-Policy, no framing, `no-store` on patient pages; Chart.js pinned to an exact version with an integrity hash |
+| Input | Uploads capped at 1 MB; `sheetName` must look like a device id; capture times from a broken phone clock are replaced |
 | Accountability | **Audit log** of logins, views and deletions |
 | Right to erasure (GDPR) | **Delete-all-for-a-MAC** button on the patient page |
 | Data residency | Deploy in an **EU region** (config below uses Frankfurt) with a provider DPA |
@@ -67,12 +70,40 @@ side.
   modelled** and depend on the device's per-patient stride-length calibration.
   Days with no gait data (too little walking, or step-only firmware) simply show
   none — they are never treated as a measured zero.
+- **Clock times** — the device has no clock: a "day" is 24 hours counted from
+  when it was switched on, and a reading is stamped with the moment that day
+  ended. The per-minute charts work back from that stamp, so a walk shows at
+  the time it happened instead of assuming the log starts at midnight. All
+  times are written in `DISPLAY_TZ` (default `Europe/Madrid`), not the host's
+  UTC. Firmware that sends a day-info record lets the phone date a day that
+  reached it late; without it such a day is dated by its arrival.
+- **Last seen** — when the server last *received* anything from the device,
+  which is what SILENT is judged on. It is deliberately not the date of the
+  newest day: a day that reaches the phone late is dated back to when it ended.
+- **Battery** — the device does not report charge. Its figure is the charger's
+  voltage monitor: cell voltage as a percentage of 4.2 V, in 2 % steps, so
+  3.70 V reads 88 and the device shuts down near 70. The server converts it to
+  volts and to an *estimated* state of charge on a typical LiPo curve
+  (`LIPO_VOLTS_TO_SOC` in `app.py`); the dashboard shows both and the BATTERY
+  threshold is in estimated charge. **If you had set that threshold in the old
+  units (e.g. 80), lower it** — it now means what it says.
+- **Patient page length** — the most recent `PATIENT_DAYS` days (default 90);
+  `?days=N` or the "Show all" link for more.
 - **Alerting** — background checker raises **SILENT** (no data > `ALERT_SILENT_HOURS`),
   **LOW** (latest daily steps < `ALERT_MIN_STEPS`), **CADENCE**, **MINUTES**,
   **SPEED** (measured walking speed < the patient's threshold) and **BATTERY**;
   shown on the dashboard and emailed if SMTP is configured. SPEED only fires on a
   day that actually carries a gait measurement, and CADENCE only on a day whose
   cadence could be read.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v     # no extra dependencies
+python check_i18n.py                         # every string has its Spanish twin
+```
+
+The tests run against a throwaway SQLite file and never touch `DATABASE_URL`.
 
 ## Run locally
 
@@ -177,8 +208,10 @@ on the account. Adding another would exhaust the quota and stop both.
    `DATABASE_URL` to switch.
 2. **Always-on plan** — remove the free-tier sleep, so the alert thread runs on
    schedule rather than only while the service is awake.
-3. **Hardening** — CSRF protection, rate limiting, per-clinician accounts/roles,
-   key rotation, log retention.
+3. **Hardening** — ~~CSRF protection, login rate limiting, audit-log
+   retention~~ (done); still open: per-clinician accounts/roles, key rotation,
+   rate limiting of the ingest endpoint, the SMTP password stored in clear in
+   the settings table.
 4. **Compliance** — provider **DPA**, EU/health-certified hosting (e.g. HDS),
    documented under a QMS (ISO 13485 / IEC 62304) for any CE-marking effort.
 
@@ -197,7 +230,11 @@ on the account. Adding another would exhaust the quota and stop both.
 | `DB_CONNECT_TIMEOUT_S` | `5` | Ceiling on establishing a connection, applied by libpq to **each** address the host resolves to — a managed Postgres name often has three, so the worst case is three times this |
 | `DB_STATEMENT_TIMEOUT_MS` | `20000` | Server-side ceiling on any one query. `connect_timeout` only bounds the handshake, so without this a database that stops making progress produces a 60 s hang and a killed worker instead of an error in the log. `0` disables |
 | `DB_PATH` | `stepcounter.db` | SQLite file, used only when `DATABASE_URL` is unset |
+| `DISPLAY_TZ` | `Europe/Madrid` | Zone every time on the pages and in the emails is written in (the host runs in UTC) |
+| `PATIENT_DAYS` | `90` | Days shown on a patient page unless `?days=` asks for more |
+| `AUDIT_RETENTION_DAYS` | `365` | Audit rows older than this are pruned by the alert thread. `0` keeps them for ever |
 | `ALERT_SILENT_HOURS` | `26` | Silence before a SILENT alert |
+| `ALERT_BATTERY_MIN` | `20` | Default BATTERY threshold, in **estimated charge** (%), changeable in Settings |
 | `ALERT_MIN_STEPS` | `1000` | Daily-step floor (placeholder — set clinically) |
 | `ALERT_CHECK_MIN` | `30` | Background check cadence (min) |
 | `ALERT_COOLDOWN_H` | `12` | Min hours between repeat notifications |

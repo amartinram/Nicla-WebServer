@@ -42,6 +42,7 @@
     {% endwith %}
 
     <form method="post" action="/patient/{{ device_id }}/config">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="card">
         <h2>{{ _("Activity thresholds for this patient") }}</h2>
         <p class="desc">{{ _("An alert (and email) is raised when the latest day falls below any of these. Set a value to <b>0</b> to disable that metric.")|safe }}</p>

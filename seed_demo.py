@@ -15,7 +15,9 @@ the "no gait data" path stays visible on the charts.
 """
 import time
 import random
+from datetime import datetime
 
+import i18n
 from db import connect, init_schema
 
 DAY_MS = 86_400_000
@@ -88,10 +90,26 @@ def gait_day(minute_log, speed_ms, stance_pct, cadence):
     }
 
 
+def last_midnight_ms():
+    """The most recent midnight in the display zone. A reading is stamped with
+    the moment its day ended, and day_log() lays its walks out by clock time
+    from minute 0, so the demo days have to end at midnight for the charts to
+    show the morning walk in the morning."""
+    now = datetime.now(i18n.DISPLAY_TZ)
+    return int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+
 def insert_patient(db, device_id, daily_targets, last_offset_days=0,
-                   speed_ms=None, stance_pct=60, cadence=110):
-    now = int(time.time() * 1000)
+                   speed_ms=None, stance_pct=60, cadence=110, battery_gauge=None):
+    now = last_midnight_ms()
     n = len(daily_targets)
+    if battery_gauge is not None:
+        # The battery stream: the device's voltage gauge (60-98), not charge.
+        seen = now - last_offset_days * DAY_MS
+        db.execute(
+            "INSERT INTO readings (device_id, captured_at, total_steps, minute_log, received_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (device_id + "_Battery", seen, battery_gauge, "", seen))
     for i, target in enumerate(daily_targets):
         # captured_at walks from oldest to newest; last_offset_days ages the newest.
         captured = now - (last_offset_days + (n - 1 - i)) * DAY_MS
@@ -118,11 +136,12 @@ def main():
     db.execute("DELETE FROM readings WHERE device_id LIKE ?", ("AA_BB_CC_DD_EE_%",))
 
     insert_patient(db, "AA_BB_CC_DD_EE_01", [3200, 4100, 3800, 4500, 3900, 4200, 4000],
-                   speed_ms=1.25, stance_pct=60, cadence=110)
+                   speed_ms=1.25, stance_pct=60, cadence=110, battery_gauge=96)
     # Slow, short-stance, highly variable: what an asymmetric prosthetic gait
     # looks like next to the healthy one above.
+    # Battery gauge 86 is about 3.65 V: nearly flat, though it reads "86".
     insert_patient(db, "AA_BB_CC_DD_EE_02", [3000, 2800, 2500, 1900, 1200, 700, 300],
-                   speed_ms=0.62, stance_pct=53, cadence=85)
+                   speed_ms=0.62, stance_pct=53, cadence=85, battery_gauge=86)
     # No gait block at all -- step-only firmware, so its cadence can only be
     # estimated from the step log.
     insert_patient(db, "AA_BB_CC_DD_EE_03", [3500, 3300, 3600], last_offset_days=4,

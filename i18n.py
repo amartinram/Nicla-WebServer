@@ -14,7 +14,9 @@ templates, so keep their markup identical in both languages.
 Alert emails are translated as whole messages (EMAILS below) rather than
 sentence by sentence, because word order differs between the two languages.
 """
+import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 LANGS = ("en", "es")
 DEFAULT_LANG = "en"
@@ -26,6 +28,17 @@ LOCALES = {"en": "en-GB", "es": "es-ES"}
 # strftime patterns. Spain writes day before month.
 DATE_FMT = {"en": "%Y-%m-%d %H:%M", "es": "%d/%m/%Y %H:%M"}
 DAY_FMT  = {"en": "%m-%d %H:%M",    "es": "%d/%m %H:%M"}
+
+# The zone every time on the pages and in the emails is written in. The host
+# runs in UTC, so without this a doctor in Spain read every timestamp one or
+# two hours early, and a day uploaded just after midnight carried yesterday's
+# date. Set DISPLAY_TZ to the clinic's zone; an unknown name falls back to the
+# server's own.
+DISPLAY_TZ_NAME = os.environ.get("DISPLAY_TZ", "Europe/Madrid")
+try:
+    DISPLAY_TZ = ZoneInfo(DISPLAY_TZ_NAME)
+except Exception:  # noqa: BLE001 - a bad or missing zone must not stop the app
+    DISPLAY_TZ, DISPLAY_TZ_NAME = None, "server"
 
 # Names shown for the status and alert codes. The codes themselves (stored in
 # alert_state, used as CSS classes) never change.
@@ -45,6 +58,8 @@ ES = {
     "User": "Usuario",
     "Password": "Contraseña",
     "Invalid credentials": "Usuario o contraseña incorrectos",
+    "Too many attempts. Try again in a few minutes.":
+        "Demasiados intentos. Vuelva a intentarlo en unos minutos.",
 
     # --- shared navigation
     "Settings": "Ajustes",
@@ -95,6 +110,8 @@ ES = {
     "Alert thresholds": "Umbrales de alerta",
     "Alert after no data for (hours)": "Alertar tras no recibir datos durante (horas)",
     "Low-battery threshold (%)": "Umbral de batería baja (%)",
+    "The battery figure is an estimate of remaining charge, worked out from the battery voltage the device reports.":
+        "La cifra de batería es una estimación de la carga restante, calculada a partir de la tensión de batería que comunica el dispositivo.",
     "The daily-step threshold is set per patient on each patient's page.":
         "El umbral de pasos diarios se configura para cada paciente en su propia página.",
     "Save settings": "Guardar ajustes",
@@ -182,6 +199,11 @@ ES = {
     "steps/min": "pasos/min",
     "in a {n}-min walking bout ({group})": "en un episodio de marcha de {n} min ({group})",
     "hour of day": "hora del día",
+    "Showing the most recent {n} of {total} days.":
+        "Se muestran los {n} días más recientes de {total}.",
+    "Show all": "Ver todos",
+    "The device has no clock: each day is 24 hours counted from when it was switched on. Clock times are worked back from the moment the day ended and shown in {tz} time.":
+        "El dispositivo no tiene reloj: cada día son 24 horas contadas desde que se encendió. Las horas se calculan hacia atrás desde el momento en que terminó el día y se muestran en hora de {tz}.",
     "not measured": "sin medir",
     "Gait cycle on {day}": "Ciclo de marcha del {day}",
     "Walking bouts on {day}": "Episodios de marcha del {day}",
@@ -348,10 +370,15 @@ def num(value, lang, digits=None):
     return s.replace(".", ",") if lang == "es" else s
 
 
+def local_dt(ms):
+    """An epoch-ms timestamp as a datetime in the display zone."""
+    return datetime.fromtimestamp(ms / 1000, DISPLAY_TZ)
+
+
 def fmt_ms(ms, lang, day_only=False):
-    """An epoch-ms timestamp as local date/time in `lang`'s order."""
+    """An epoch-ms timestamp as display-zone date/time in `lang`'s order."""
     pattern = (DAY_FMT if day_only else DATE_FMT)[norm_lang(lang)]
-    return datetime.fromtimestamp(ms / 1000).strftime(pattern)
+    return local_dt(ms).strftime(pattern)
 
 
 def email(kind, lang, **fields):

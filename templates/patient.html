@@ -4,7 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ device_id }} — StepCounter</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <!-- Pinned to an exact version with a hash: this page holds patient data, and
+       a floating "@4" would run whatever the CDN served next. To upgrade,
+       change the version and replace the hash with
+       openssl dgst -sha384 -binary chart.umd.min.js | openssl base64 -A -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js"
+          integrity="sha384-Emf5ZVIUiarAdhkgtqK+5/Z5qIvM6QoVrS+qAVtfyZVuD5lIHrac0me485+Antp0"
+          crossorigin="anonymous"></script>
   <style>
     :root { --bg:#ffffff; --card:#ffffff; --border:#e2e8f0; --ok:#16a34a; --alert:#dc2626;
             --muted:#64748b; --text:#0f172a; --accent:#2563eb; }
@@ -92,7 +98,7 @@
       <div class="stat"><div class="v" id="stat-speed">–</div><div class="k">{{ _("walking speed (m/s)") }}</div></div>
       <div class="stat"><div class="v" id="stat-stance">–</div><div class="k">{{ _("stance phase (% of cycle)") }}</div></div>
       {% if me %}<div class="stat"><div class="v">{{ me.hours_ago|num }} h</div><div class="k">{{ _("since last report") }}</div></div>{% endif %}
-      {% if me %}<div class="stat"><div class="v">{% if me.battery is not none %}{{ me.battery }}%{% else %}—{% endif %}</div><div class="k">{{ _("battery") }}</div></div>{% endif %}
+      {% if me %}<div class="stat"><div class="v">{% if me.battery is not none %}≈{{ me.battery }}%{% else %}—{% endif %}</div><div class="k">{{ _("battery") }}{% if me.battery_v is not none %} · {{ me.battery_v|num(2) }} V{% endif %}</div></div>{% endif %}
     </div>
 
     {% if me %}
@@ -108,6 +114,10 @@
     <div class="card">
       <h2>{{ _("Daily steps") }} <span style="color:var(--muted);font-weight:400;font-size:12px">{{ _("(click any day to see its detail)") }}</span></h2>
       <canvas id="dailyChart" height="90"></canvas>
+      {% if shown_days < total_days %}
+      <p class="note">{{ _("Showing the most recent {n} of {total} days.", n=shown_days, total=total_days) }}
+        <a href="{{ url_for('patient', device_id=device_id, days='all') }}" style="color:var(--accent)">{{ _("Show all") }}</a></p>
+      {% endif %}
     </div>
 
     <div class="card">
@@ -117,6 +127,7 @@
         <span>{{ _("Active time") }}:</span>
         {% for label in bout_labels %}<span><span class="sw bout-{{ loop.index0 }}"></span>{{ label }}</span>{% endfor %}
       </div>
+      <p class="note">{{ _("The device has no clock: each day is 24 hours counted from when it was switched on. Clock times are worked back from the moment the day ended and shown in {tz} time.", tz=tz_name) }}</p>
     </div>
 
     <div class="card">
@@ -191,6 +202,7 @@
 
     <form method="post" action="/patient/{{ device_id }}/delete"
           onsubmit="return confirm(T.confirmDelete);">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" style="background:rgba(220,38,38,.10);color:var(--alert);border:1px solid var(--alert);
               padding:9px 14px;border-radius:8px;font-size:13px;cursor:pointer">
         {{ _("Delete all data for this device (GDPR erasure)") }}
@@ -202,6 +214,9 @@
     const dailyLabels  = {{ daily_labels | tojson }};
     const dailySteps   = {{ daily_steps | tojson }};
     const dailyMinutes = {{ daily_minutes | tojson }};   // one per-minute array per day
+    // Minute of the day (0-1439) at which each day's log begins. The device
+    // counts 24 h from power-on, so a log does not start at midnight.
+    const dailyStart   = {{ daily_start | tojson }};
     const dailySpeed   = {{ daily_speed | tojson }};     // m/s per minute, null = unmeasured
     const dailyGait    = {{ daily_gait | tojson }};      // day gait summary, null = none
     // Per day: active minutes, walking bouts [start, length, group], the three
@@ -235,20 +250,25 @@
     const fmt = (x, digits) => x == null ? '–' : Number(x).toLocaleString(LOCALE,
       digits == null ? {} : { minimumFractionDigits: digits, maximumFractionDigits: digits });
     let   selectedDay  = dailyMinutes.length - 1;         // default = latest day
+    let   dayStart     = dailyStart[selectedDay] || 0;    // follows the selected day
 
     const GRID = 'rgba(15,23,42,.08)', TICK = '#64748b';
     // One tick per minute keeps the hover exact, but a gridline per minute paints
     // the plot solid grey and hides the lighter marks. Draw the hour lines only.
-    const HOUR_GRID = (ctx) => ctx.index % 60 === 0 ? GRID : 'transparent';
+    const onTheHour = (index) => (dayStart + index) % 60 === 0;
+    const HOUR_GRID = (ctx) => onTheHour(ctx.index) ? GRID : 'transparent';
+    const hourTick  = (val, index) =>
+      onTheHour(index) ? (Math.floor((dayStart + index) / 60) % 24) + 'h' : '';
     const SPEED = '#6250d6';
     const BOUT = ['#d95926', '#199e70', '#2a78d6'];      // short, medium, long (match .bout-N)
     const IDLE = '#cbd5e1';                              // the flat line between bouts
     const CADENCE_SOURCE = { gait: T.srcGait, steps: T.srcSteps };
     Chart.defaults.locale = LOCALE;               // tick and tooltip numbers
 
-    // x label = time of day for each minute (index 0 = 00:00).
+    // x label = clock time of each minute of the selected day's log.
     const timeLabelsFor = (arr) => arr.map((_, i) => {
-      const h = Math.floor(i / 60), m = i % 60;
+      const t = (dayStart + i) % 1440;
+      const h = Math.floor(t / 60), m = t % 60;
       return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
     });
 
@@ -304,7 +324,7 @@
                             }}}},
                  scales:{ x:{title:{display:true,text:T.hourOfDay,color:TICK},
                              ticks:{color:TICK,autoSkip:false,maxRotation:0,
-                                    callback:(val,index)=> index % 60 === 0 ? (index/60)+'h' : ''},
+                                    callback:hourTick},
                              grid:{color:HOUR_GRID}},
                           y:{ticks:{color:TICK}, grid:{color:GRID}} } }
     });
@@ -324,7 +344,7 @@
                                                                : fmt(ctx.parsed.y) + ' m/s'}}},
                  scales:{ x:{title:{display:true,text:T.hourOfDay,color:TICK},
                              ticks:{color:TICK,autoSkip:false,maxRotation:0,
-                                    callback:(val,index)=> index % 60 === 0 ? (index/60)+'h' : ''},
+                                    callback:hourTick},
                              grid:{color:HOUR_GRID}},
                           y:{beginAtZero:true, title:{display:true,text:'m/s',color:TICK},
                              ticks:{color:TICK}, grid:{color:GRID}} } }
@@ -394,6 +414,7 @@
 
     function showDay(i) {
       selectedDay = i;
+      dayStart = dailyStart[i] || 0;
       const arr = dailyMinutes[i] || [];
       const a = dailyActivity[i];
       // steps-per-minute chart, coloured by the length of each walking bout

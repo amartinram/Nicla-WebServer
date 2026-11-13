@@ -43,6 +43,7 @@
     {% endwith %}
 
     <form method="post" action="/settings">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="card">
         <h2>{{ _("Email alerts") }}</h2>
         <p class="desc">{{ _("When a patient sends no data or activity is low, an email is sent here.") }}</p>
@@ -93,6 +94,7 @@
             <input id="battery_min" name="battery_min" value="{{ cfg.battery_min }}">
           </div>
         </div>
+        <div class="hint">{{ _("The battery figure is an estimate of remaining charge, worked out from the battery voltage the device reports.") }}</div>
         <div class="hint">{{ _("The daily-step threshold is set per patient on each patient's page.") }}</div>
       </div>
 
@@ -100,10 +102,12 @@
     </form>
 
     <form method="post" action="/settings/test" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="secondary">{{ _("Send test email") }}</button>
     </form>
 
     <form method="post" action="/settings/labels">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="card" style="margin-top:20px">
         <h2>{{ _("Patient labels (MAC → name)") }}</h2>
         <p class="desc">{{ _("Give each device that has sent data a friendly label shown on the dashboard (e.g. <b>User1</b>). The MAC address stays visible inside each patient's page. Leave blank to just show the MAC. <b>Keep labels non-identifying</b> (no real names) to preserve pseudonymisation.")|safe }}</p>

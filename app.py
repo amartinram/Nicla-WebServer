@@ -22,14 +22,15 @@ sheetName / steps / logData / captureTime.
 """
 
 import os
+import re
 import time
 import smtplib
+import collections
 import statistics
 import secrets
 import threading
 from functools import wraps
 from email.message import EmailMessage
-from datetime import datetime
 
 from flask import (Flask, request, render_template, redirect, url_for,
                    session, g, abort, flash)
@@ -53,10 +54,50 @@ ALERT_MIN_SPEED    = float(os.environ.get("ALERT_MIN_SPEED", "0"))    # m/s, per
 ALERT_BATTERY_MIN  = int(os.environ.get("ALERT_BATTERY_MIN", "20"))   # global battery % floor
 ALERT_CHECK_MIN    = float(os.environ.get("ALERT_CHECK_MIN", "30"))
 ALERT_COOLDOWN_H   = float(os.environ.get("ALERT_COOLDOWN_H", "12"))
+# The audit log gains a row for every page view; rows older than this are
+# pruned by the alert thread so it cannot fill a small managed database.
+AUDIT_RETENTION_DAYS = int(os.environ.get("AUDIT_RETENTION_DAYS", "365"))   # 0 = keep forever
+# Days shown on a patient page unless ?days=N or ?days=all asks otherwise. Each
+# day is a 1440-value log (two with gait), so an unbounded page grows by
+# several kB per day of monitoring.
+PATIENT_DAYS = int(os.environ.get("PATIENT_DAYS", "90"))
 
 # Battery arrives as a separate stream "<MAC>_Battery" whose "steps" value is the
 # battery percentage. We fold it back into its parent patient (see evaluate()).
 BATTERY_SUFFIX = "_Battery"
+
+# The device does not report charge. Its "battery percentage" is the charger's
+# voltage monitor: the cell voltage as a percentage of the 4.2 V charge target,
+# in 2 % steps. A cell at 3.70 V therefore reads 88 while holding about a
+# seventh of its charge, and the device shuts down at a reading near 70 -- so a
+# threshold in those units could never mean what its "%" suggested, and the
+# default of 20 could not fire at all. The reading is converted back to volts
+# and then to an estimated state of charge on a typical single-cell LiPo
+# resting curve. It is an estimate: the gauge's steps are 84 mV wide.
+BATTERY_FULL_V = 4.2
+BATTERY_GAUGE_STEP = 2          # the reading means "between this and this + 2"
+LIPO_VOLTS_TO_SOC = (
+    (4.20, 100), (4.15, 95), (4.11, 90), (4.08, 85), (4.02, 80), (3.98, 75),
+    (3.95, 70), (3.91, 65), (3.87, 60), (3.85, 55), (3.84, 50), (3.82, 45),
+    (3.80, 40), (3.79, 35), (3.77, 30), (3.75, 25), (3.73, 20), (3.71, 15),
+    (3.69, 10), (3.61, 5), (3.27, 0),
+)
+
+
+def battery_state(gauge):
+    """Volts and estimated charge for a reported gauge value, or None when the
+    device could not read its battery (it reports that as 254 or 255)."""
+    if gauge is None or not 0 < gauge <= 100:
+        return None
+    volts = min(BATTERY_FULL_V,
+                BATTERY_FULL_V * (gauge + BATTERY_GAUGE_STEP / 2) / 100)
+    soc = 0.0
+    for (v_hi, soc_hi), (v_lo, soc_lo) in zip(LIPO_VOLTS_TO_SOC, LIPO_VOLTS_TO_SOC[1:]):
+        if volts >= v_lo:
+            soc = soc_lo + (soc_hi - soc_lo) * (min(volts, v_hi) - v_lo) / (v_hi - v_lo)
+            break
+    return {"gauge": gauge, "volts": round(volts, 2), "soc": round(soc)}
+
 
 # Walking speed travels as one byte per minute to keep the device's BLE dump
 # small; this is the metre-per-second value of one unit. It must stay in step
@@ -129,6 +170,9 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=FORCE_HTTPS,
+    # A day's upload is under 15 kB. Without a ceiling one request could hand
+    # the worker an arbitrarily large body to parse.
+    MAX_CONTENT_LENGTH=1024 * 1024,
 )
 
 if _pw_hash:
@@ -354,6 +398,19 @@ def day_activity(minutes, gait=None):
     }
 
 
+def log_start_minute(captured_ms, n_minutes):
+    """Minute of the day, 0-1439 in the display zone, at which a per-minute log
+    begins.
+
+    The device has no clock and starts counting when it is switched on, so its
+    "day" is 24 hours that begin at an arbitrary time, not at midnight. A
+    reading is stamped with the moment that day ended, which puts its first
+    minute `n_minutes` earlier.
+    """
+    start = i18n.local_dt(captured_ms - n_minutes * 60_000)
+    return start.hour * 60 + start.minute
+
+
 def speed_series(speed_log):
     """Per-minute walking speed in m/s, with None for the minutes the device
     did not measure. None rather than 0 matters: the device only samples gait
@@ -430,6 +487,101 @@ def enforce_https():
         return redirect(url, code=301)
 
 
+def token_ok(supplied):
+    """Constant-time check of an ingest token. Compared as bytes because
+    compare_digest raises on a non-ASCII str, which turned a junk token into a
+    500 instead of a 401."""
+    return secrets.compare_digest((supplied or "").encode(), INGEST_TOKEN.encode())
+
+
+# Every page is self-contained except for Chart.js, which is pinned to an exact
+# version with a hash in patient.html. 'unsafe-inline' is needed by the pages'
+# own inline scripts and styles; the policy still stops scripts from any other
+# origin, framing, and forms posting anywhere else.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+
+
+@app.after_request
+def security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    resp.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    if FORCE_HTTPS:
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    if session.get("user"):
+        # Patient pages must not be kept by the browser or a shared proxy.
+        resp.headers.setdefault("Cache-Control", "no-store")
+    return resp
+
+
+# CSRF. The session cookie is SameSite=Lax, which already keeps it off
+# cross-site POSTs in current browsers; the token is the second line, and the
+# one that does not depend on the browser. The phone's upload and the login
+# form carry no session to ride on, so they are exempt.
+CSRF_EXEMPT = {"ingest", "login"}
+
+
+def csrf_token():
+    if "csrf" not in session:
+        session["csrf"] = secrets.token_urlsafe(32)
+    return session["csrf"]
+
+
+@app.before_request
+def csrf_protect():
+    if request.method != "POST" or request.endpoint in CSRF_EXEMPT:
+        return
+    expected = session.get("csrf", "")
+    supplied = request.form.get("csrf_token", "")
+    if not expected or not secrets.compare_digest(expected.encode(), supplied.encode()):
+        abort(400)
+
+
+# Login throttle: there is one account, so guessing its password is the whole
+# attack. Held in memory, which is enough for the single worker this runs on.
+LOGIN_MAX_FAILURES = 8
+LOGIN_WINDOW_S = 600
+_login_failures = collections.defaultdict(collections.deque)
+_login_lock = threading.Lock()
+
+
+def _recent_failures(ip, now):
+    attempts = _login_failures[ip]
+    while attempts and now - attempts[0] > LOGIN_WINDOW_S:
+        attempts.popleft()
+    return attempts
+
+
+def login_blocked(ip):
+    with _login_lock:
+        blocked = len(_recent_failures(ip, time.time())) >= LOGIN_MAX_FAILURES
+        if not _login_failures[ip]:
+            del _login_failures[ip]
+        return blocked
+
+
+def login_failed(ip):
+    with _login_lock:
+        if len(_login_failures) > 10_000:       # never let the table itself grow unbounded
+            _login_failures.clear()
+        now = time.time()
+        _recent_failures(ip, now).append(now)
+
+
+def safe_next(target):
+    """`target` if it is a path on this site, else the dashboard. The value
+    comes from the query string, so anything else would let a crafted login
+    link send a doctor who has just typed their password to another site."""
+    if target and target.startswith("/") and not target.startswith("//") and "\\" not in target:
+        return target
+    return url_for("dashboard")
+
+
 @app.route(HEALTH_PATH)
 def healthz():
     """Liveness only — deliberately does not touch the database. The app and the
@@ -449,9 +601,8 @@ def healthz_db():
     Behind the ingest token, because the error text names the host it failed to
     reach. It never discloses the connection string or the credentials.
     """
-    if INGEST_TOKEN:
-        if not secrets.compare_digest(request.values.get("token", ""), INGEST_TOKEN):
-            abort(401)
+    if INGEST_TOKEN and not token_ok(request.values.get("token", "")):
+        abort(401)
 
     lines = [f"engine: {'postgres' if IS_POSTGRES else 'sqlite'}",
              f"connect_timeout_s: {CONNECT_TIMEOUT_S} (per resolved address)",
@@ -533,6 +684,8 @@ def i18n_context():
         "languages": i18n.SWITCH_NAMES,
         "lang_url": lang_url,
         "_": t,
+        "csrf_token": csrf_token,
+        "tz_name": i18n.DISPLAY_TZ_NAME,
         "alert_name": lambda code: i18n.alert_name(code, lang),
         "dt": lambda ms: i18n.fmt_ms(ms, lang),
     }
@@ -555,14 +708,20 @@ def login_required(view):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
+        ip = request.remote_addr or "unknown"
+        if login_blocked(ip):
+            audit("login.throttled", actor=ip)
+            flash(t("Too many attempts. Try again in a few minutes."))
+            return render_template("login.html"), 429
         user = request.form.get("user", "")
         pw = request.form.get("password", "")
         if user == DOCTOR_USER and check_password_hash(DOCTOR_PW_HASH, pw):
+            session.clear()             # a fresh session, and a fresh CSRF token with it
             session["user"] = user
             audit("login.success", actor=user)
-            nxt = request.args.get("next") or url_for("dashboard")
-            return redirect(nxt)
-        audit("login.failure", target=user, actor=request.remote_addr)
+            return redirect(safe_next(request.args.get("next")))
+        login_failed(ip)
+        audit("login.failure", target=user[:64], actor=ip)
         flash(t("Invalid credentials"))
     return render_template("login.html")
 
@@ -608,24 +767,37 @@ def _gait_fields(src):
     }
 
 
+# What the phone sends as sheetName: the device MAC with ':' written as '_',
+# plus "_Battery" for the battery stream. It becomes part of page URLs and the
+# key every table is joined on, so nothing else is accepted.
+DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,64}$")
+# Capture times outside this range come from a phone whose clock is wrong. A
+# date in the future would make the patient look freshly seen for ever.
+MIN_CAPTURE_MS = 1_577_836_800_000          # 2020-01-01
+MAX_CAPTURE_AHEAD_MS = 86_400_000
+
+
 @app.route("/", methods=["POST"])
 @app.route("/data", methods=["POST"])
 def ingest():
-    if INGEST_TOKEN:
-        token = request.values.get("token", "")
-        if not secrets.compare_digest(token, INGEST_TOKEN):
-            audit("ingest.denied", actor=request.remote_addr)
-            abort(401)
+    if INGEST_TOKEN and not token_ok(request.values.get("token", "")):
+        audit("ingest.denied", actor=request.remote_addr)
+        abort(401)
 
     src = request.form if request.form else request.args
     device_id = (src.get("sheetName") or "Unknown_Device").strip()
+    if not DEVICE_ID_RE.match(device_id):
+        return "Rejected: sheetName is not a device id\n", 400
     try:
         total_steps = int(float(src.get("steps", "0")))
     except ValueError:
         total_steps = 0
     minute_log = src.get("logData", "")
     capture_raw = src.get("captureTime", "")
-    captured_at = int(capture_raw) if capture_raw.isdigit() else int(time.time() * 1000)
+    now_ms = int(time.time() * 1000)
+    captured_at = int(capture_raw) if capture_raw.isdigit() else now_ms
+    if not MIN_CAPTURE_MS <= captured_at <= now_ms + MAX_CAPTURE_AHEAD_MS:
+        captured_at = now_ms
 
     # Gait block. Optional on purpose: a device on step-only firmware, or a day
     # with no walking long enough to analyse, posts none of these fields and
@@ -635,15 +807,25 @@ def ingest():
     db = get_db()
     # Idempotent: the phone retries an upload whose response it never saw, and
     # on a sleeping free instance the server can commit the row well after the
-    # client has given up waiting. DO NOTHING makes that retry a no-op instead
-    # of a second copy of the day. Still a 200, so the phone clears its cache.
+    # client has given up waiting. A repeat of the same day is a no-op instead
+    # of a second copy of it. Still a 200, so the phone clears its cache.
+    #
+    # The one thing a repeat may add is gait. The device resends a whole day
+    # when the link drops between its step log and its gait log, so the same
+    # day can arrive first without gait and then with it; the stored row takes
+    # the gait it was missing and is otherwise left alone.
     db.execute(
         "INSERT INTO readings (device_id, captured_at, total_steps, minute_log, received_at,"
         " speed_log, gait_cycles, mean_speed, stance_pct, stride_ms, stride_cv,"
         " stride_cm, excursion_01)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        " ON CONFLICT (device_id, captured_at) DO NOTHING",
-        (device_id, captured_at, total_steps, minute_log, int(time.time() * 1000),
+        " ON CONFLICT (device_id, captured_at) DO UPDATE SET"
+        " speed_log = excluded.speed_log, gait_cycles = excluded.gait_cycles,"
+        " mean_speed = excluded.mean_speed, stance_pct = excluded.stance_pct,"
+        " stride_ms = excluded.stride_ms, stride_cv = excluded.stride_cv,"
+        " stride_cm = excluded.stride_cm, excursion_01 = excluded.excursion_01"
+        " WHERE readings.gait_cycles IS NULL AND excluded.gait_cycles IS NOT NULL",
+        (device_id, captured_at, total_steps, minute_log, now_ms,
          gait["speed_log"], gait["cycles"], gait["mean_speed"], gait["stance_pct"],
          gait["stride_ms"], gait["stride_cv"], gait["stride_cm"], gait["excursion_01"]),
     )
@@ -664,11 +846,12 @@ def evaluate(db):
     now_ms = int(time.time() * 1000)
     rows = db.execute(
         """
-        SELECT r.device_id, r.captured_at, r.total_steps, r.minute_log,
+        SELECT r.device_id, r.captured_at, last.seen AS last_received,
+               r.total_steps, r.minute_log,
                r.speed_log, r.gait_cycles, r.mean_speed, r.stance_pct,
                r.stride_ms, r.stride_cv, r.stride_cm, r.excursion_01
         FROM readings r
-        JOIN (SELECT device_id, MAX(captured_at) AS m
+        JOIN (SELECT device_id, MAX(captured_at) AS m, MAX(received_at) AS seen
               FROM readings GROUP BY device_id) last
           ON r.device_id = last.device_id AND r.captured_at = last.m
         ORDER BY r.device_id
@@ -685,12 +868,19 @@ def evaluate(db):
         if did.endswith(BATTERY_SUFFIX):
             continue                      # folded into its parent patient below
         cfg_p = configs.get(did, PATIENT_DEFAULTS)
-        bat = battery.get(did)            # None if this patient sends no battery stream
+        # None if this patient sends no battery stream, or the device could
+        # not read its battery.
+        bat = battery_state(battery.get(did))
         gait = gait_metrics(r)            # None when the day carries no gait block
         activity = day_activity(parse_log(r["minute_log"]), gait)
         cadence, active_minutes = activity["cadence"], activity["active_minutes"]
 
-        silent = (now_ms - r["captured_at"]) > silent_hours * 3600_000
+        # "Last seen" is when the server last heard from the device, not the
+        # date of the newest day. The two differ whenever a day reaches the
+        # phone late: it is dated back to when it ended, and judging silence
+        # by that date would keep a patient SILENT who has just reported.
+        seen_ms = r["last_received"]
+        silent = (now_ms - seen_ms) > silent_hours * 3600_000
         # A threshold of 0 means "metric disabled" (no alert).
         low = cfg_p["min_steps"] > 0 and r["total_steps"] < cfg_p["min_steps"]
         # Like speed below: a day with no readable cadence is unknown, not slow.
@@ -703,7 +893,7 @@ def evaluate(db):
         # whose device runs step-only firmware.
         low_speed = (cfg_p["min_speed"] > 0 and gait is not None
                      and gait["speed_ms"] < cfg_p["min_speed"])
-        battery_low = bat is not None and bat < battery_min
+        battery_low = bat is not None and bat["soc"] < battery_min
         alerts = (["SILENT"] if silent else []) \
                + (["LOW"] if low else []) \
                + (["CADENCE"] if low_cadence else []) \
@@ -713,9 +903,8 @@ def evaluate(db):
         summary.append({
             "device_id": did,
             "label": aliases.get(did) or did,
-            "last_seen_ms": r["captured_at"],
-            "last_seen": datetime.fromtimestamp(r["captured_at"] / 1000).strftime("%Y-%m-%d %H:%M"),
-            "hours_ago": round((now_ms - r["captured_at"]) / 3600_000, 1),
+            "last_seen_ms": seen_ms,
+            "hours_ago": round((now_ms - seen_ms) / 3600_000, 1),
             "total_steps": r["total_steps"],
             "cadence": cadence,
             "cadence_source": activity["cadence_source"],
@@ -725,7 +914,8 @@ def evaluate(db):
             "min_minutes": cfg_p["min_minutes"],
             "min_speed": cfg_p["min_speed"],
             "gait": gait,
-            "battery": bat,
+            "battery": bat["soc"] if bat else None,       # estimated charge, %
+            "battery_v": bat["volts"] if bat else None,
             "status": "ALERT" if alerts else "OK",
             "alerts": alerts,
         })
@@ -752,17 +942,28 @@ def dashboard():
 @login_required
 def patient(device_id):
     db = get_db()
+    total_days = db.execute("SELECT COUNT(*) FROM readings WHERE device_id = ?",
+                            (device_id,)).fetchone()[0]
+    if not total_days:
+        abort(404)
+    # The most recent PATIENT_DAYS by default; ?days=N or ?days=all for more.
+    asked = request.args.get("days", "")
+    limit = total_days if asked == "all" else (
+        int(asked) if asked.isdigit() and int(asked) > 0 else PATIENT_DAYS)
     rows = db.execute(
         "SELECT captured_at, total_steps, minute_log, speed_log, gait_cycles,"
         " mean_speed, stance_pct, stride_ms, stride_cv, stride_cm, excursion_01"
-        " FROM readings WHERE device_id = ? ORDER BY captured_at", (device_id,)).fetchall()
-    if not rows:
-        abort(404)
+        " FROM readings WHERE device_id = ? ORDER BY captured_at DESC LIMIT ?",
+        (device_id, limit)).fetchall()[::-1]            # back to oldest first
     audit("view.patient", target=device_id)
 
     daily_labels = [i18n.fmt_ms(r["captured_at"], g.lang, day_only=True) for r in rows]
     daily_steps = [r["total_steps"] for r in rows]
     daily_minutes = [parse_log(r["minute_log"]) for r in rows]   # one per-minute array per day
+    # Clock time of each log's first minute, so the charts show when the
+    # patient actually walked rather than assuming the log starts at midnight.
+    daily_start = [log_start_minute(r["captured_at"], len(m))
+                   for r, m in zip(rows, daily_minutes)]
     daily_speed = [speed_series(r["speed_log"]) for r in rows]   # m/s, None where unmeasured
     daily_gait = [gait_metrics(r) for r in rows]                 # None on days without gait
     # Bouts, active minutes and the day's one cadence figure, per day.
@@ -773,8 +974,10 @@ def patient(device_id):
     return render_template("patient.html", device_id=device_id, label=label,
                            daily_labels=daily_labels, daily_steps=daily_steps,
                            daily_minutes=daily_minutes, daily_speed=daily_speed,
+                           daily_start=daily_start,
                            daily_gait=daily_gait, daily_activity=daily_activity,
-                           bout_labels=bout_labels(g.lang), me=me)
+                           bout_labels=bout_labels(g.lang), me=me,
+                           shown_days=len(rows), total_days=total_days)
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -888,10 +1091,11 @@ def delete_patient(device_id):
     """GDPR right to erasure: remove all data for a device/pseudonym,
     including its battery stream and per-patient configuration."""
     db = get_db()
-    targets = (device_id, device_id + BATTERY_SUFFIX)
-    for t in targets:
-        db.execute("DELETE FROM readings WHERE device_id = ?", (t,))
-        db.execute("DELETE FROM alert_state WHERE device_id = ?", (t,))
+    # Not `t`: that name is the translation function used a few lines down,
+    # and shadowing it made every deletion end in a 500 after the data was gone.
+    for stream in (device_id, device_id + BATTERY_SUFFIX):
+        db.execute("DELETE FROM readings WHERE device_id = ?", (stream,))
+        db.execute("DELETE FROM alert_state WHERE device_id = ?", (stream,))
     db.execute("DELETE FROM patient_config WHERE device_id = ?", (device_id,))
     db.execute("DELETE FROM device_alias WHERE device_id = ?", (device_id,))
     db.commit()
@@ -917,8 +1121,12 @@ def send_email(subject, body, cfg, lang="en"):
         m["From"] = cfg.get("alert_from") or cfg.get("smtp_user")
         m["To"] = cfg["alert_to"]
         m.set_content(body)
-        with smtplib.SMTP(cfg["smtp_host"], int(cfg.get("smtp_port") or 587), timeout=20) as srv:
-            srv.starttls()
+        port = int(cfg.get("smtp_port") or 587)
+        # 465 is TLS from the first byte; every other port upgrades with STARTTLS.
+        smtp = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+        with smtp(cfg["smtp_host"], port, timeout=20) as srv:
+            if port != 465:
+                srv.starttls()
             if cfg.get("smtp_user"):
                 srv.login(cfg["smtp_user"], cfg.get("smtp_pass", ""))
             srv.send_message(m)
@@ -938,6 +1146,9 @@ def check_alerts():
     lang = i18n.norm_lang(cfg.get("alert_lang"))
     num = lambda v: i18n.num(v, lang)          # noqa: E731
     try:
+        if AUDIT_RETENTION_DAYS > 0:
+            db.execute("DELETE FROM audit WHERE ts < ?",
+                       (now_ms - AUDIT_RETENTION_DAYS * 86_400_000,))
         for p in evaluate(db):
             for kind in p["alerts"]:
                 row = db.execute("SELECT notified_at FROM alert_state WHERE device_id=? AND kind=?",
