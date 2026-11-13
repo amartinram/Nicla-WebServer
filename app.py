@@ -36,6 +36,7 @@ from flask import (Flask, request, render_template, redirect, url_for,
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
+import i18n
 from db import (connect, init_schema, IS_POSTGRES, STATEMENT_TIMEOUT_MS,
                 CONNECT_TIMEOUT_S, FORCE_IPV4)
 
@@ -73,11 +74,14 @@ GAIT_EXC_LSB = 0.1
 # value per minute, so a bout's length is a whole number of minutes.
 BOUT_SHORT_MAX = 1      # minutes: at most this long -> "short"
 BOUT_LONG_MIN  = 5      # minutes: at least this long -> "long"; between -> "medium"
-BOUT_GROUPS = (
-    {"key": "short",  "label": "1 min or less"},
-    {"key": "medium", "label": f"{BOUT_SHORT_MAX + 1} to {BOUT_LONG_MIN - 1} min"},
-    {"key": "long",   "label": f"{BOUT_LONG_MIN} min or more"},
-)
+BOUT_GROUPS = ("short", "medium", "long")
+
+
+def bout_labels(lang):
+    """The three groups' names in `lang`, in BOUT_GROUPS order."""
+    return [i18n.t("{n} min or less", lang, n=BOUT_SHORT_MAX),
+            i18n.t("{a} to {b} min", lang, a=BOUT_SHORT_MAX + 1, b=BOUT_LONG_MIN - 1),
+            i18n.t("{n} min or more", lang, n=BOUT_LONG_MIN)]
 # The first and last minute of a bout are only partly walked, so a bout needs at
 # least this many minutes before it holds one that was walked from start to end.
 STEADY_BOUT_MIN = 3
@@ -99,6 +103,8 @@ SMTP_USER  = os.environ.get("SMTP_USER", "")
 SMTP_PASS  = os.environ.get("SMTP_PASS", "")
 ALERT_FROM = os.environ.get("ALERT_FROM", SMTP_USER)
 ALERT_TO   = os.environ.get("ALERT_TO", "")
+# Language of the alert emails; the doctors read Spanish. Changeable in Settings.
+ALERT_LANG = i18n.norm_lang(os.environ.get("ALERT_LANG", "es"))
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -202,6 +208,7 @@ SETTINGS_DEFAULTS = {
     "alert_to":     ALERT_TO,
     "silent_hours": str(ALERT_SILENT_HOURS),
     "battery_min":  str(ALERT_BATTERY_MIN),
+    "alert_lang":   ALERT_LANG,
 }
 
 
@@ -319,15 +326,15 @@ def day_activity(minutes, gait=None):
         if length >= STEADY_BOUT_MIN:
             steady.extend(minutes[start + 1:start + length - 1])
 
-    def summary(key, label, mins, steps):
-        return {"key": key, "label": label, "bouts": len(steps),
+    def summary(key, mins, steps):
+        return {"key": key, "bouts": len(steps),
                 "minutes": len(mins), "steps": sum(steps),
                 "cadence_mean": mean_or_none(mins), "cadence_sd": sd_or_none(mins),
                 "steps_mean": mean_or_none(steps), "steps_sd": sd_or_none(steps)}
 
-    groups = [summary(g["key"], g["label"], per_minute[k], per_bout[k])
-              for k, g in enumerate(BOUT_GROUPS)]
-    overall = summary("all", "All walking",
+    groups = [summary(key, per_minute[k], per_bout[k])
+              for k, key in enumerate(BOUT_GROUPS)]
+    overall = summary("all",
                       [v for m in per_minute for v in m], [v for b in per_bout for v in b])
 
     if gait and gait["cadence"]:
@@ -477,6 +484,65 @@ def healthz_db():
         return "\n".join(lines) + "\n", 503
 
 
+# ----------------------------------------------------------------------------
+# Language (English / Spanish). See i18n.py.
+# ----------------------------------------------------------------------------
+# Chosen per browser: ?lang=xx (the switch in every page header) sets a cookie
+# that sticks; without one, the browser's own language decides, so a doctor
+# whose browser is in Spanish lands on Spanish pages without touching anything.
+LANG_COOKIE = "lang"
+
+
+@app.before_request
+def pick_language():
+    asked = request.args.get("lang")
+    if asked in i18n.LANGS:
+        g.lang, g.lang_chosen = asked, True
+        return
+    cookie = request.cookies.get(LANG_COOKIE)
+    g.lang = cookie if cookie in i18n.LANGS else (
+        request.accept_languages.best_match(i18n.LANGS) or i18n.DEFAULT_LANG)
+
+
+@app.after_request
+def remember_language(resp):
+    if g.get("lang_chosen"):
+        resp.set_cookie(LANG_COOKIE, g.lang, max_age=365 * 24 * 3600,
+                        samesite="Lax", secure=FORCE_HTTPS, httponly=True)
+    return resp
+
+
+def t(text, **kw):
+    """`text` in the current request's language."""
+    return i18n.t(text, g.get("lang", i18n.DEFAULT_LANG), **kw)
+
+
+def lang_url(code):
+    """The current page in another language, keeping its other query args."""
+    args = request.args.to_dict()
+    args["lang"] = code
+    return url_for(request.endpoint, **(request.view_args or {}), **args)
+
+
+@app.context_processor
+def i18n_context():
+    lang = g.get("lang", i18n.DEFAULT_LANG)
+    return {
+        "lang": lang,
+        "locale": i18n.LOCALES[lang],
+        "languages": i18n.SWITCH_NAMES,
+        "lang_url": lang_url,
+        "_": t,
+        "alert_name": lambda code: i18n.alert_name(code, lang),
+        "dt": lambda ms: i18n.fmt_ms(ms, lang),
+    }
+
+
+@app.template_filter("num")
+def num_filter(value, digits=None):
+    return i18n.num(value, g.get("lang", i18n.DEFAULT_LANG), digits)
+
+
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -497,7 +563,7 @@ def login():
             nxt = request.args.get("next") or url_for("dashboard")
             return redirect(nxt)
         audit("login.failure", target=user, actor=request.remote_addr)
-        flash("Invalid credentials")
+        flash(t("Invalid credentials"))
     return render_template("login.html")
 
 
@@ -679,7 +745,7 @@ def dashboard():
     audit("view.dashboard")
     return render_template("dashboard.html", patients=summary,
                            silent_hours=cfg["silent_hours"], battery_min=cfg["battery_min"],
-                           generated=datetime.now().strftime("%Y-%m-%d %H:%M"))
+                           generated=i18n.fmt_ms(time.time() * 1000, g.lang))
 
 
 @app.route("/patient/<device_id>")
@@ -694,7 +760,7 @@ def patient(device_id):
         abort(404)
     audit("view.patient", target=device_id)
 
-    daily_labels = [datetime.fromtimestamp(r["captured_at"] / 1000).strftime("%m-%d %H:%M") for r in rows]
+    daily_labels = [i18n.fmt_ms(r["captured_at"], g.lang, day_only=True) for r in rows]
     daily_steps = [r["total_steps"] for r in rows]
     daily_minutes = [parse_log(r["minute_log"]) for r in rows]   # one per-minute array per day
     daily_speed = [speed_series(r["speed_log"]) for r in rows]   # m/s, None where unmeasured
@@ -708,7 +774,7 @@ def patient(device_id):
                            daily_labels=daily_labels, daily_steps=daily_steps,
                            daily_minutes=daily_minutes, daily_speed=daily_speed,
                            daily_gait=daily_gait, daily_activity=daily_activity,
-                           bout_groups=BOUT_GROUPS, me=me)
+                           bout_labels=bout_labels(g.lang), me=me)
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -725,20 +791,21 @@ def settings_page():
             "alert_to":     form.get("alert_to", "").strip(),
             "silent_hours": form.get("silent_hours", "26").strip() or "26",
             "battery_min":  form.get("battery_min", "20").strip() or "20",
+            "alert_lang":   i18n.norm_lang(form.get("alert_lang", ALERT_LANG)),
         }
         # Only overwrite the password when a new one is typed (field left blank = keep).
         if form.get("smtp_pass", ""):
             values["smtp_pass"] = form.get("smtp_pass")
         save_settings(db, values)
         audit("settings.update")
-        flash("Settings saved")
+        flash(t("Settings saved"))
         return redirect(url_for("settings_page"))
 
     cfg = get_settings(db)
     aliases = get_aliases(db)
     devices = [{"device_id": d, "label": aliases.get(d, "")} for d in known_devices(db)]
     return render_template("settings.html", cfg=cfg, has_pass=bool(cfg.get("smtp_pass")),
-                           devices=devices)
+                           devices=devices, language_names=i18n.LANGUAGE_NAMES)
 
 
 @app.route("/settings/labels", methods=["POST"])
@@ -756,7 +823,7 @@ def settings_labels():
             db.execute("DELETE FROM device_alias WHERE device_id = ?", (did,))
     db.commit()
     audit("settings.labels")
-    flash("Patient labels saved.")
+    flash(t("Patient labels saved."))
     return redirect(url_for("settings_page"))
 
 
@@ -764,12 +831,12 @@ def settings_labels():
 @login_required
 def settings_test():
     cfg = get_settings(get_db())
-    ok, msg = send_email("[StepCounter] Test email",
-                         "This is a test from the StepCounter server. "
-                         "If you can read this, patient-failure alerts will reach this inbox.",
-                         cfg)
+    # The test goes out in the alerts' language, so it previews what doctors get;
+    # the result is reported in the language of the page.
+    subject, body = i18n.email("TEST", cfg.get("alert_lang"))
+    ok, msg = send_email(subject, body, cfg, lang=g.lang)
     audit("settings.test", target=("ok" if ok else "fail"))
-    flash(("Test email sent: " if ok else "Test failed: ") + msg)
+    flash(t("Test email sent: {msg}", msg=msg) if ok else t("Test failed: {msg}", msg=msg))
     return redirect(url_for("settings_page"))
 
 
@@ -796,7 +863,7 @@ def patient_config_page(device_id):
             min_minutes = num("min_minutes", lambda x: int(float(x)))
             min_speed   = num("min_speed", float)
         except ValueError:
-            flash("Invalid value — thresholds must be numbers ≥ 0 (0 disables a metric).")
+            flash(t("Invalid value — thresholds must be numbers ≥ 0 (0 disables a metric)."))
             return redirect(url_for("patient_config_page", device_id=device_id))
         db.execute(
             "INSERT INTO patient_config (device_id, min_steps, min_cadence, min_minutes, min_speed)"
@@ -808,7 +875,7 @@ def patient_config_page(device_id):
         db.commit()
         audit("patient.config", target=f"{device_id} steps={min_steps} cadence={min_cadence}"
                                        f" minutes={min_minutes} speed={min_speed}")
-        flash("Thresholds saved.")
+        flash(t("Thresholds saved."))
         return redirect(url_for("patient_config_page", device_id=device_id))
 
     cfg_p = get_patient_config(db, device_id)
@@ -829,18 +896,19 @@ def delete_patient(device_id):
     db.execute("DELETE FROM device_alias WHERE device_id = ?", (device_id,))
     db.commit()
     audit("delete.patient", target=device_id)
-    flash(f"All data for {device_id} deleted")
+    flash(t("All data for {device} deleted", device=device_id))
     return redirect(url_for("dashboard"))
 
 
 # ----------------------------------------------------------------------------
 # Alerting (background thread)
 # ----------------------------------------------------------------------------
-def send_email(subject, body, cfg):
+def send_email(subject, body, cfg, lang="en"):
     """Send one email using the dashboard-configured SMTP settings (cfg dict).
-    Returns (ok, message) so the Settings 'send test' button can report back."""
+    Returns (ok, message) so the Settings 'send test' button can report back;
+    `lang` is the language of that message, not of the email."""
     if not cfg.get("smtp_host") or not cfg.get("alert_to"):
-        msg = "Email not configured (set SMTP host and recipient in Settings)."
+        msg = i18n.t("Email not configured (set SMTP host and recipient in Settings).", lang)
         app.logger.info("[alert] %s", msg)
         return False, msg
     try:
@@ -855,7 +923,7 @@ def send_email(subject, body, cfg):
                 srv.login(cfg["smtp_user"], cfg.get("smtp_pass", ""))
             srv.send_message(m)
         app.logger.info("[alert] emailed: %s", subject)
-        return True, f"Sent to {cfg['alert_to']}"
+        return True, i18n.t("Sent to {to}", lang, to=cfg["alert_to"])
     except Exception as e:  # noqa: BLE001
         app.logger.error("[alert] email failed: %s", e)
         return False, str(e)
@@ -867,6 +935,8 @@ def check_alerts():
     now_ms = int(time.time() * 1000)
     cooldown_ms = ALERT_COOLDOWN_H * 3600_000
     cfg = get_settings(db)
+    lang = i18n.norm_lang(cfg.get("alert_lang"))
+    num = lambda v: i18n.num(v, lang)          # noqa: E731
     try:
         for p in evaluate(db):
             for kind in p["alerts"]:
@@ -874,55 +944,21 @@ def check_alerts():
                                  (p["device_id"], kind)).fetchone()
                 if row and (now_ms - row["notified_at"]) < cooldown_ms:
                     continue
-                if kind == "SILENT":
-                    subject = f"[StepCounter] Alert: patient {p['device_id']} has not walked"
-                    body = (f"Patient: {p['device_id']}\n\n"
-                            f"This patient has not walked (no data received) for "
-                            f"{p['hours_ago']} h, exceeding the configured limit of "
-                            f"{cfg['silent_hours']} h.\n"
-                            f"Last data received: {p['last_seen']}.\n\n"
-                            f"The device may be unworn, the battery empty, or the patient "
-                            f"immobile.")
-                elif kind == "BATTERY":
-                    subject = f"[StepCounter] Alert: patient {p['device_id']} low battery"
-                    body = (f"Patient: {p['device_id']}\n\n"
-                            f"The device battery is at {p['battery']}%, below the configured "
-                            f"threshold of {cfg['battery_min']}%.\n"
-                            f"Last data received: {p['last_seen']}.\n\n"
-                            f"The device should be recharged soon to avoid a gap in monitoring.")
-                elif kind == "CADENCE":
-                    subject = f"[StepCounter] Alert: patient {p['device_id']} low cadence"
-                    body = (f"Patient: {p['device_id']}\n\n"
-                            f"Walking cadence was {p['cadence']} steps/min on the latest day "
-                            f"({'measured from the gait cycle' if p['cadence_source'] == 'gait' else 'estimated from step counts'}), "
-                            f"below this patient's threshold of {p['min_cadence']} steps/min.\n"
-                            f"Last data received: {p['last_seen']}.")
-                elif kind == "SPEED":
-                    subject = f"[StepCounter] Alert: patient {p['device_id']} low walking speed"
-                    body = (f"Patient: {p['device_id']}\n\n"
-                            f"Measured walking speed was {p['gait']['speed_ms']} m/s on the "
-                            f"latest day, below this patient's threshold of "
-                            f"{p['min_speed']} m/s.\n"
-                            f"Measured over {p['gait']['cycles']} gait cycles; stance phase "
-                            f"{p['gait']['stance_pct']}% of the gait cycle, cadence "
-                            f"{p['gait']['cadence']} steps/min.\n"
-                            f"Last data received: {p['last_seen']}.\n\n"
-                            f"Walking speed depends on the device's per-patient stride-length "
-                            f"calibration; check it before acting on an unexpected value.")
-                elif kind == "MINUTES":
-                    subject = f"[StepCounter] Alert: patient {p['device_id']} low active time"
-                    body = (f"Patient: {p['device_id']}\n\n"
-                            f"This patient was active for only {p['active_minutes']} minutes on "
-                            f"the latest day, below this patient's threshold of "
-                            f"{p['min_minutes']} minutes.\n"
-                            f"Last data received: {p['last_seen']}.")
-                else:
-                    subject = f"[StepCounter] Alert: patient {p['device_id']} low activity"
-                    body = (f"Patient: {p['device_id']}\n\n"
-                            f"This patient has taken fewer steps than required: "
-                            f"{p['total_steps']} steps on the latest day, below this patient's "
-                            f"threshold of {p['min_steps']} steps.\n"
-                            f"Last data received: {p['last_seen']}.")
+                gait = p["gait"] or {}
+                subject, body = i18n.email(
+                    kind if kind in i18n.EMAILS else "LOW", lang,
+                    patient=p["device_id"], hours=num(p["hours_ago"]),
+                    silent_hours=num(cfg["silent_hours"]),
+                    last_seen=i18n.fmt_ms(p["last_seen_ms"], lang),
+                    battery=p["battery"], battery_min=num(cfg["battery_min"]),
+                    cadence=p["cadence"], min_cadence=num(p["min_cadence"]),
+                    cadence_source=i18n.t("measured from gait" if p["cadence_source"] == "gait"
+                                          else "estimated from step counts", lang),
+                    speed=num(gait.get("speed_ms")), min_speed=num(p["min_speed"]),
+                    cycles=gait.get("cycles"), stance=gait.get("stance_pct"),
+                    gait_cadence=gait.get("cadence"),
+                    active_minutes=p["active_minutes"], min_minutes=p["min_minutes"],
+                    steps=p["total_steps"], min_steps=p["min_steps"])
                 ok, _ = send_email(subject, body, cfg)
                 if ok:
                     # Only start the cooldown once an alert has actually been delivered,

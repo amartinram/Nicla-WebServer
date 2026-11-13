@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ lang }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>StepCounter — Sign in</title>
+  <title>StepCounter — {{ _("Sign in") }}</title>
   <style>
     :root { --bg:#f1f5f9; --card:#ffffff; --border:#e2e8f0; --muted:#64748b; --text:#0f172a; --accent:#2563eb; }
     body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
@@ -20,20 +20,25 @@
              background:var(--accent); color:#ffffff; font-weight:700; font-size:14px; cursor:pointer; }
     .err { background:rgba(220,38,38,.12); color:#dc2626; padding:8px 12px;
            border-radius:8px; font-size:13px; margin-bottom:12px; }
+    .langswitch { font-size:13px; color:var(--muted); }
+    .langswitch a { color:var(--muted); }
+    .langswitch b { color:var(--text); }
+    .langswitch { display:block; text-align:right; margin:-12px -8px 8px 0; }
   </style>
 </head>
 <body>
   <form method="post">
+    {% include "_lang.html" %}
     <h1>🦿 StepCounter</h1>
-    <p class="sub">Authorised clinical access only</p>
+    <p class="sub">{{ _("Authorised clinical access only") }}</p>
     {% with messages = get_flashed_messages() %}
       {% for m in messages %}<div class="err">{{ m }}</div>{% endfor %}
     {% endwith %}
-    <label for="user">User</label>
+    <label for="user">{{ _("User") }}</label>
     <input id="user" name="user" autocomplete="username" autofocus>
-    <label for="password">Password</label>
+    <label for="password">{{ _("Password") }}</label>
     <input id="password" name="password" type="password" autocomplete="current-password">
-    <button type="submit">Sign in</button>
+    <button type="submit">{{ _("Sign in") }}</button>
   </form>
 </body>
 </html>

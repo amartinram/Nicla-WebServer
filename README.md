@@ -54,6 +54,11 @@ side.
   from the fully walked minutes of bouts lasting 3 min or more (a bout's first
   and last minute are only partly walked, so they are left out). A day with
   neither shows no cadence rather than an average diluted by partial minutes.
+- **Languages** — English and Spanish (Spain). Each page follows the browser's
+  language until someone picks **EN · ES** in the header, which is remembered
+  for a year. Alert emails use their own language, set in Settings (default
+  Spanish, or `ALERT_LANG`). All text lives in `i18n.py`; after adding or
+  rewording any, run `python check_i18n.py` to catch missing translations.
 - **Gait & speed** — the device measures gait in short bursts while the patient
   walks and reports, per day: walking speed, stance and swing phase as a share of
   the gait cycle, cadence, stride time, stride length and stride-time

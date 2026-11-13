@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ lang }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -65,15 +65,19 @@
     .bouttable td.n { font-weight:700; font-size:15px; }
     .bouttable tfoot td { border-bottom:0; color:var(--muted); }
     .tablewrap { overflow-x:auto; }
+    .langswitch { font-size:13px; color:var(--muted); }
+    .langswitch a { color:var(--muted); }
+    .langswitch b { color:var(--text); }
   </style>
 </head>
 <body>
   <header>
-    <a class="back" href="/">&larr; All patients</a> ·
-    <a class="back" href="/patient/{{ device_id }}/config">⚙ Settings</a> ·
-    <a class="back" href="/logout">Sign out</a>
+    <a class="back" href="/">&larr; {{ _("All patients") }}</a> ·
+    <a class="back" href="/patient/{{ device_id }}/config">⚙ {{ _("Settings") }}</a> ·
+    <a class="back" href="/logout">{{ _("Sign out") }}</a> ·
+    {% include "_lang.html" %}
     <h1>{{ label }}
-      {% if me %}<span class="pill {{ me.status }}">{{ me.status }}</span>{% endif %}
+      {% if me %}<span class="pill {{ me.status }}">{{ alert_name(me.status) }}</span>{% endif %}
     </h1>
     <div style="color:var(--muted);font-size:13px;margin-top:4px;word-break:break-all">MAC: {{ device_id }}</div>
   </header>
@@ -82,55 +86,55 @@
       {% for m in messages %}<p style="background:rgba(22,163,74,.12);color:var(--ok);padding:8px 12px;border-radius:8px;font-size:13px">{{ m }}</p>{% endfor %}
     {% endwith %}
     <div class="stats">
-      <div class="stat"><div class="v" id="stat-steps">–</div><div class="k">steps · <span id="stat-day">selected day</span></div></div>
-      <div class="stat"><div class="v" id="stat-cadence">–</div><div class="k">cadence (steps/min) · <span id="stat-cadence-src"></span></div></div>
-      <div class="stat"><div class="v" id="stat-active">–</div><div class="k">active minutes</div></div>
-      <div class="stat"><div class="v" id="stat-speed">–</div><div class="k">walking speed (m/s)</div></div>
-      <div class="stat"><div class="v" id="stat-stance">–</div><div class="k">stance phase (% of cycle)</div></div>
-      {% if me %}<div class="stat"><div class="v">{{ me.hours_ago }} h</div><div class="k">since last report</div></div>{% endif %}
-      {% if me %}<div class="stat"><div class="v">{% if me.battery is not none %}{{ me.battery }}%{% else %}—{% endif %}</div><div class="k">battery</div></div>{% endif %}
+      <div class="stat"><div class="v" id="stat-steps">–</div><div class="k">{{ _("steps") }} · <span id="stat-day">{{ _("selected day") }}</span></div></div>
+      <div class="stat"><div class="v" id="stat-cadence">–</div><div class="k">{{ _("cadence (steps/min)") }} · <span id="stat-cadence-src"></span></div></div>
+      <div class="stat"><div class="v" id="stat-active">–</div><div class="k">{{ _("active minutes") }}</div></div>
+      <div class="stat"><div class="v" id="stat-speed">–</div><div class="k">{{ _("walking speed (m/s)") }}</div></div>
+      <div class="stat"><div class="v" id="stat-stance">–</div><div class="k">{{ _("stance phase (% of cycle)") }}</div></div>
+      {% if me %}<div class="stat"><div class="v">{{ me.hours_ago|num }} h</div><div class="k">{{ _("since last report") }}</div></div>{% endif %}
+      {% if me %}<div class="stat"><div class="v">{% if me.battery is not none %}{{ me.battery }}%{% else %}—{% endif %}</div><div class="k">{{ _("battery") }}</div></div>{% endif %}
     </div>
 
     {% if me %}
     <p style="color:var(--muted);font-size:13px">
-      Alert thresholds — steps/day: <b>{{ me.min_steps }}</b> ·
-      cadence: <b>{% if me.min_cadence %}{{ me.min_cadence }}{% else %}off{% endif %}</b> ·
-      active min: <b>{% if me.min_minutes %}{{ me.min_minutes }}{% else %}off{% endif %}</b> ·
-      speed: <b>{% if me.min_speed %}{{ me.min_speed }} m/s{% else %}off{% endif %}</b> ·
-      <a href="/patient/{{ device_id }}/config" style="color:var(--accent)">edit in ⚙ Settings</a>
+      {{ _("Alert thresholds") }} — {{ _("steps/day") }}: <b>{{ me.min_steps }}</b> ·
+      {{ _("cadence") }}: <b>{% if me.min_cadence %}{{ me.min_cadence|num }}{% else %}{{ _("off") }}{% endif %}</b> ·
+      {{ _("active min") }}: <b>{% if me.min_minutes %}{{ me.min_minutes }}{% else %}{{ _("off") }}{% endif %}</b> ·
+      {{ _("speed") }}: <b>{% if me.min_speed %}{{ me.min_speed|num }} m/s{% else %}{{ _("off") }}{% endif %}</b> ·
+      <a href="/patient/{{ device_id }}/config" style="color:var(--accent)">{{ _("edit in ⚙ Settings") }}</a>
     </p>
     {% endif %}
 
     <div class="card">
-      <h2>Daily steps <span style="color:var(--muted);font-weight:400;font-size:12px">(click any day to see its detail)</span></h2>
+      <h2>{{ _("Daily steps") }} <span style="color:var(--muted);font-weight:400;font-size:12px">{{ _("(click any day to see its detail)") }}</span></h2>
       <canvas id="dailyChart" height="90"></canvas>
     </div>
 
     <div class="card">
-      <h2 id="minuteTitle">Steps per minute</h2>
+      <h2 id="minuteTitle">{{ _("Steps per minute") }}</h2>
       <canvas id="minuteChart" height="90"></canvas>
       <div class="legend">
-        <span>Active time:</span>
-        {% for g in bout_groups %}<span><span class="sw bout-{{ loop.index0 }}"></span>{{ g.label }}</span>{% endfor %}
+        <span>{{ _("Active time") }}:</span>
+        {% for label in bout_labels %}<span><span class="sw bout-{{ loop.index0 }}"></span>{{ label }}</span>{% endfor %}
       </div>
     </div>
 
     <div class="card">
-      <h2 id="boutTitle">Walking bouts</h2>
+      <h2 id="boutTitle">{{ _("Walking bouts") }}</h2>
       <div id="boutBody" hidden>
         <div class="boutbar" id="boutBar" role="img">
-          {% for g in bout_groups %}<div class="bout-{{ loop.index0 }}" id="boutSeg{{ loop.index0 }}"></div>{% endfor %}
+          {% for label in bout_labels %}<div class="bout-{{ loop.index0 }}" id="boutSeg{{ loop.index0 }}"></div>{% endfor %}
         </div>
         <div class="tablewrap">
         <table class="bouttable">
           <thead><tr>
-            <th>Active time</th><th>Bouts</th><th>Minutes</th>
-            <th>Share of walking time</th><th>Steps</th>
-            <th>Steps per bout<br>mean ± SD</th><th>Cadence (steps/min)<br>mean ± SD</th>
+            <th>{{ _("Active time") }}</th><th>{{ _("Bouts") }}</th><th>{{ _("Minutes") }}</th>
+            <th>{{ _("Share of walking time") }}</th><th>{{ _("Steps") }}</th>
+            <th>{{ _("Steps per bout") }}<br>{{ _("mean ± SD") }}</th><th>{{ _("Cadence (steps/min)") }}<br>{{ _("mean ± SD") }}</th>
           </tr></thead>
           <tbody>
-            {% for g in bout_groups %}<tr>
-              <td><span class="sw bout-{{ loop.index0 }}"></span>{{ g.label }}</td>
+            {% for label in bout_labels %}<tr>
+              <td><span class="sw bout-{{ loop.index0 }}"></span>{{ label }}</td>
               <td class="n" id="bout{{ loop.index0 }}-n">–</td>
               <td id="bout{{ loop.index0 }}-min">–</td>
               <td id="bout{{ loop.index0 }}-share">–</td>
@@ -140,67 +144,56 @@
             </tr>{% endfor %}
           </tbody>
           <tfoot><tr>
-            <td>All walking</td><td id="boutAll-n">–</td><td id="boutAll-min">–</td>
+            <td>{{ _("All walking") }}</td><td id="boutAll-n">–</td><td id="boutAll-min">–</td>
             <td>100%</td><td id="boutAll-steps">–</td>
             <td id="boutAll-stepsd">–</td><td id="boutAll-cad">–</td>
           </tr></tfoot>
         </table>
         </div>
         <p class="note">
-          A bout is a run of consecutive minutes with steps recorded; the bar shows how the
-          day's walking time splits between the three active times. Cadence here is the mean
-          and standard deviation of the step count of every minute walked in that group;
-          steps per bout is the same over each bout's total. Cadence reads low in the short
-          bouts because those minutes are only partly walked — it is not slower walking,
-          which is why the day's cadence at the top is never an average over them.
+          {{ _("A bout is a run of consecutive minutes with steps recorded; the bar shows how the day's walking time splits between the three active times. Cadence here is the mean and standard deviation of the step count of every minute walked in that group; steps per bout is the same over each bout's total. Cadence reads low in the short bouts because those minutes are only partly walked — it is not slower walking, which is why the day's cadence at the top is never an average over them.") }}
         </p>
       </div>
-      <div id="boutEmpty" class="nodata">No walking recorded on this day.</div>
+      <div id="boutEmpty" class="nodata">{{ _("No walking recorded on this day.") }}</div>
     </div>
 
     <div class="card">
-      <h2 id="gaitTitle">Gait cycle</h2>
+      <h2 id="gaitTitle">{{ _("Gait cycle") }}</h2>
       <div id="gaitBody" hidden>
         <div class="cycle">
-          <div class="stance" id="cycleStance">STANCE</div>
-          <div class="swing" id="cycleSwing">SWING</div>
+          <div class="stance" id="cycleStance">{{ _("STANCE") }}</div>
+          <div class="swing" id="cycleSwing">{{ _("SWING") }}</div>
         </div>
         <div class="cycle-axis">
-          <div id="axStance"><span>heel strike</span><span>toe off</span></div>
-          <div id="axSwing"><span></span><span>next heel strike</span></div>
+          <div id="axStance"><span>{{ _("heel strike") }}</span><span>{{ _("toe off") }}</span></div>
+          <div id="axSwing"><span></span><span>{{ _("next heel strike") }}</span></div>
         </div>
         <div class="gaitgrid">
-          <div><div class="v" id="g-cadence">–</div><div class="k">cadence (steps/min)</div></div>
-          <div><div class="v" id="g-stride">–</div><div class="k">stride time (s)</div></div>
-          <div><div class="v" id="g-length">–</div><div class="k">stride length (cm)</div></div>
-          <div><div class="v" id="g-cv">–</div><div class="k">stride variability (CV %)</div></div>
-          <div><div class="v" id="g-exc">–</div><div class="k">shank excursion (°)</div></div>
-          <div><div class="v" id="g-cycles">–</div><div class="k">gait cycles analysed</div></div>
+          <div><div class="v" id="g-cadence">–</div><div class="k">{{ _("cadence (steps/min)") }}</div></div>
+          <div><div class="v" id="g-stride">–</div><div class="k">{{ _("stride time (s)") }}</div></div>
+          <div><div class="v" id="g-length">–</div><div class="k">{{ _("stride length (cm)") }}</div></div>
+          <div><div class="v" id="g-cv">–</div><div class="k">{{ _("stride variability (CV %)") }}</div></div>
+          <div><div class="v" id="g-exc">–</div><div class="k">{{ _("shank excursion (°)") }}</div></div>
+          <div><div class="v" id="g-cycles">–</div><div class="k">{{ _("gait cycles analysed") }}</div></div>
         </div>
         <p class="note">
-          Stance, swing, cadence, stride time and variability are measured directly from the
-          heel-strike and toe-off events in the shank gyroscope. <b>Stride length and walking
-          speed are modelled</b> from the shank excursion and depend on this patient's
-          stride-length calibration on the device — check it before reading anything into an
-          unexpected value.
+          {{ _("Stance, swing, cadence, stride time and variability are measured directly from the heel-strike and toe-off events in the shank gyroscope. <b>Stride length and walking speed are modelled</b> from the shank excursion and depend on this patient's stride-length calibration on the device — check it before reading anything into an unexpected value.")|safe }}
         </p>
       </div>
-      <div id="gaitEmpty" class="nodata">No gait data for this day. The device measures gait
-        in short bursts while the patient is walking, so a day with little walking — or a
-        device running step-only firmware — records none.</div>
+      <div id="gaitEmpty" class="nodata">{{ _("No gait data for this day. The device measures gait in short bursts while the patient is walking, so a day with little walking — or a device running step-only firmware — records none.") }}</div>
     </div>
 
     <div class="card">
-      <h2 id="speedTitle">Walking speed (m/s)</h2>
+      <h2 id="speedTitle">{{ _("Walking speed (m/s)") }}</h2>
       <canvas id="speedChart" height="90"></canvas>
-      <p class="note">Gaps are minutes the device did not measure, not minutes standing still.</p>
+      <p class="note">{{ _("Gaps are minutes the device did not measure, not minutes standing still.") }}</p>
     </div>
 
     <form method="post" action="/patient/{{ device_id }}/delete"
-          onsubmit="return confirm('Delete ALL data for {{ device_id }}? This cannot be undone (GDPR erasure).');">
+          onsubmit="return confirm(T.confirmDelete);">
       <button type="submit" style="background:rgba(220,38,38,.10);color:var(--alert);border:1px solid var(--alert);
               padding:9px 14px;border-radius:8px;font-size:13px;cursor:pointer">
-        Delete all data for this device (GDPR erasure)
+        {{ _("Delete all data for this device (GDPR erasure)") }}
       </button>
     </form>
   </main>
@@ -215,7 +208,32 @@
     // bout groups, and the day's cadence. Computed once on the server so every
     // figure on this page -- and the alerts -- comes from the same definition.
     const dailyActivity = {{ daily_activity | tojson }};
-    const boutLabels    = {{ bout_groups | map(attribute='label') | list | tojson }};
+    const boutLabels    = {{ bout_labels | tojson }};
+    // Every string the script writes, in the page's language. tr() fills the
+    // {placeholders}; fmt() writes numbers the way the language does (1,26 in es).
+    const LOCALE = {{ locale | tojson }};
+    const T = {{ {
+      "confirmDelete":  _("Delete ALL data for {device}? This cannot be undone (GDPR erasure).", device=device_id),
+      "steps":          _("Steps"),
+      "stepsPerMin":    _("steps/min"),
+      "inBout":         _("in a {n}-min walking bout ({group})"),
+      "hourOfDay":      _("hour of day"),
+      "notMeasured":    _("not measured"),
+      "gaitOn":         _("Gait cycle on {day}"),
+      "stance":         _("STANCE"),
+      "swing":          _("SWING"),
+      "boutsOn":        _("Walking bouts on {day}"),
+      "segTitle":       _("{group}: {min} min ({pct} of walking time)"),
+      "shareAria":      _("Share of walking time: {parts}"),
+      "minuteOn":       _("Steps per minute on {day}"),
+      "speedOn":        _("Walking speed on {day} (m/s)"),
+      "srcGait":        _("measured from gait"),
+      "srcSteps":       _("estimated from step counts"),
+      "srcNone":        _("no steady walking to read it from"),
+    } | tojson }};
+    const tr  = (s, vars = {}) => s.replace(/\{(\w+)\}/g, (m, k) => k in vars ? vars[k] : m);
+    const fmt = (x, digits) => x == null ? '–' : Number(x).toLocaleString(LOCALE,
+      digits == null ? {} : { minimumFractionDigits: digits, maximumFractionDigits: digits });
     let   selectedDay  = dailyMinutes.length - 1;         // default = latest day
 
     const GRID = 'rgba(15,23,42,.08)', TICK = '#64748b';
@@ -225,7 +243,8 @@
     const SPEED = '#6250d6';
     const BOUT = ['#d95926', '#199e70', '#2a78d6'];      // short, medium, long (match .bout-N)
     const IDLE = '#cbd5e1';                              // the flat line between bouts
-    const CADENCE_SOURCE = { gait: 'measured from gait', steps: 'estimated from step counts' };
+    const CADENCE_SOURCE = { gait: T.srcGait, steps: T.srcSteps };
+    Chart.defaults.locale = LOCALE;               // tick and tooltip numbers
 
     // x label = time of day for each minute (index 0 = 00:00).
     const timeLabelsFor = (arr) => arr.map((_, i) => {
@@ -250,7 +269,7 @@
     const dailyChart = new Chart(document.getElementById('dailyChart'), {
       type: 'bar',
       data: { labels: dailyLabels,
-              datasets: [{ label: 'Steps', data: dailySteps, backgroundColor: '#93c5fd' }] },
+              datasets: [{ label: T.steps, data: dailySteps, backgroundColor: '#93c5fd' }] },
       options: { onClick: (evt) => {
                    // 'index'/intersect:false => any day is clickable, even 0-step (0-height) days
                    const pts = dailyChart.getElementsAtEventForMode(evt, 'index', {intersect:false}, true);
@@ -264,7 +283,7 @@
     const minuteChart = new Chart(document.getElementById('minuteChart'), {
       type: 'line',
       data: { labels: timeLabelsFor(dailyMinutes[selectedDay] || []),
-              datasets: [{ label:'steps/min', data: dailyMinutes[selectedDay] || [],
+              datasets: [{ label:T.stepsPerMin, data: dailyMinutes[selectedDay] || [],
                            borderColor:IDLE, borderWidth:2, pointRadius:0, pointHoverRadius:4,
                            pointHoverBackgroundColor:(ctx)=> BOUT[groupAt(ctx.dataIndex)] || IDLE,
                            // A bout is separated from the next by a zero minute, so the two
@@ -278,13 +297,12 @@
                  plugins:{legend:{display:false},
                           tooltip:{callbacks:{
                             title:(items)=> items[0].label,               // time of day HH:MM
-                            label:(ctx)=> ctx.parsed.y + ' steps/min',
+                            label:(ctx)=> fmt(ctx.parsed.y) + ' ' + T.stepsPerMin,
                             afterLabel:(ctx)=> {
                               const len = minuteBout[ctx.dataIndex];
-                              return len ? 'in a ' + len + '-min walking bout ('
-                                           + boutLabels[groupAt(ctx.dataIndex)] + ')' : '';
+                              return len ? tr(T.inBout, { n: len, group: boutLabels[groupAt(ctx.dataIndex)] }) : '';
                             }}}},
-                 scales:{ x:{title:{display:true,text:'hour of day',color:TICK},
+                 scales:{ x:{title:{display:true,text:T.hourOfDay,color:TICK},
                              ticks:{color:TICK,autoSkip:false,maxRotation:0,
                                     callback:(val,index)=> index % 60 === 0 ? (index/60)+'h' : ''},
                              grid:{color:HOUR_GRID}},
@@ -302,9 +320,9 @@
                  plugins:{legend:{display:false},
                           tooltip:{callbacks:{
                             title:(items)=> items[0].label,
-                            label:(ctx)=> ctx.parsed.y == null ? 'not measured'
-                                                               : ctx.parsed.y + ' m/s'}}},
-                 scales:{ x:{title:{display:true,text:'hour of day',color:TICK},
+                            label:(ctx)=> ctx.parsed.y == null ? T.notMeasured
+                                                               : fmt(ctx.parsed.y) + ' m/s'}}},
+                 scales:{ x:{title:{display:true,text:T.hourOfDay,color:TICK},
                              ticks:{color:TICK,autoSkip:false,maxRotation:0,
                                     callback:(val,index)=> index % 60 === 0 ? (index/60)+'h' : ''},
                              grid:{color:HOUR_GRID}},
@@ -318,7 +336,7 @@
       const g = dailyGait[i];
       const body = document.getElementById('gaitBody');
       const empty = document.getElementById('gaitEmpty');
-      document.getElementById('gaitTitle').textContent = 'Gait cycle on ' + dailyLabels[i];
+      document.getElementById('gaitTitle').textContent = tr(T.gaitOn, { day: dailyLabels[i] });
       if (!g) { body.hidden = true; empty.hidden = false; return; }
       body.hidden = false; empty.hidden = true;
 
@@ -328,26 +346,26 @@
       for (const id of ['cycleSwing', 'axSwing']) {
         document.getElementById(id).style.flex = g.swing_pct;
       }
-      document.getElementById('cycleStance').textContent = 'STANCE ' + g.stance_pct + '%';
-      document.getElementById('cycleSwing').textContent  = 'SWING ' + g.swing_pct + '%';
+      document.getElementById('cycleStance').textContent = T.stance + ' ' + g.stance_pct + '%';
+      document.getElementById('cycleSwing').textContent  = T.swing + ' ' + g.swing_pct + '%';
 
       document.getElementById('g-cadence').textContent = dailyActivity[i].cadence ?? '–';
-      document.getElementById('g-stride').textContent  = (g.stride_ms / 1000).toFixed(2);
-      document.getElementById('g-length').textContent  = g.stride_cm;
-      document.getElementById('g-cv').textContent      = g.stride_cv_pct;
-      document.getElementById('g-exc').textContent     = g.excursion_deg;
+      document.getElementById('g-stride').textContent  = fmt(g.stride_ms / 1000, 2);
+      document.getElementById('g-length').textContent  = fmt(g.stride_cm);
+      document.getElementById('g-cv').textContent      = fmt(g.stride_cv_pct);
+      document.getElementById('g-exc').textContent     = fmt(g.excursion_deg);
       document.getElementById('g-cycles').textContent  = g.cycles;
     }
 
     // "mean ± SD"; the SD is left off when one sample leaves it undefined.
-    const meanSd = (m, sd) => m == null ? '–' : (sd == null ? String(m) : m + ' ± ' + sd);
+    const meanSd = (m, sd) => m == null ? '–' : (sd == null ? fmt(m) : fmt(m) + ' ± ' + fmt(sd));
 
     // The day's walking split into the three bout lengths: a bar for the share
     // of walking time, and the table for the figures behind it.
     function showBouts(i) {
       const a = dailyActivity[i];
       const total = a.active_minutes;
-      document.getElementById('boutTitle').textContent = 'Walking bouts on ' + dailyLabels[i];
+      document.getElementById('boutTitle').textContent = tr(T.boutsOn, { day: dailyLabels[i] });
       document.getElementById('boutBody').hidden = !total;
       document.getElementById('boutEmpty').hidden = !!total;
       if (!total) return;
@@ -357,19 +375,19 @@
         const seg = document.getElementById('boutSeg' + k);
         seg.style.flex = g.minutes;
         seg.hidden = !g.minutes;
-        seg.title = g.label + ': ' + g.minutes + ' min (' + pct(g.minutes) + ' of walking time)';
+        seg.title = tr(T.segTitle, { group: boutLabels[k], min: g.minutes, pct: pct(g.minutes) });
         document.getElementById('bout' + k + '-n').textContent     = g.bouts;
         document.getElementById('bout' + k + '-min').textContent   = g.minutes;
         document.getElementById('bout' + k + '-share').textContent = pct(g.minutes);
-        document.getElementById('bout' + k + '-steps').textContent  = g.steps;
+        document.getElementById('bout' + k + '-steps').textContent  = fmt(g.steps);
         document.getElementById('bout' + k + '-stepsd').textContent = meanSd(g.steps_mean, g.steps_sd);
         document.getElementById('bout' + k + '-cad').textContent    = meanSd(g.cadence_mean, g.cadence_sd);
       });
       document.getElementById('boutBar').setAttribute('aria-label',
-        'Share of walking time: ' + a.groups.map(g => g.label + ' ' + pct(g.minutes)).join(', '));
+        tr(T.shareAria, { parts: a.groups.map((g, k) => boutLabels[k] + ' ' + pct(g.minutes)).join(', ') }));
       document.getElementById('boutAll-n').textContent     = a.bouts.length;
       document.getElementById('boutAll-min').textContent   = total;
-      document.getElementById('boutAll-steps').textContent  = a.overall.steps;
+      document.getElementById('boutAll-steps').textContent  = fmt(a.overall.steps);
       document.getElementById('boutAll-stepsd').textContent = meanSd(a.overall.steps_mean, a.overall.steps_sd);
       document.getElementById('boutAll-cad').textContent    = meanSd(a.overall.cadence_mean, a.overall.cadence_sd);
     }
@@ -384,25 +402,25 @@
       minuteChart.data.datasets[0].data = arr;
       minuteChart.update();
       document.getElementById('minuteTitle').textContent =
-        'Steps per minute on ' + dailyLabels[i];
+        tr(T.minuteOn, { day: dailyLabels[i] });
       showBouts(i);
       // stats row -> this day's data
-      document.getElementById('stat-steps').textContent = dailySteps[i];
+      document.getElementById('stat-steps').textContent = fmt(dailySteps[i]);
       document.getElementById('stat-cadence').textContent = a.cadence ?? '–';
       document.getElementById('stat-cadence-src').textContent =
-        CADENCE_SOURCE[a.cadence_source] || 'no steady walking to read it from';
+        CADENCE_SOURCE[a.cadence_source] || T.srcNone;
       document.getElementById('stat-active').textContent = a.active_minutes;
       document.getElementById('stat-day').textContent = dailyLabels[i];
       // gait tiles, speed chart and cycle bar follow the same selected day
       const g = dailyGait[i];
-      document.getElementById('stat-speed').textContent = g ? g.speed_ms : '–';
+      document.getElementById('stat-speed').textContent = g ? fmt(g.speed_ms) : '–';
       document.getElementById('stat-stance').textContent = g ? g.stance_pct + '%' : '–';
       const sp = dailySpeed[i] || [];
       speedChart.data.labels = timeLabelsFor(sp);
       speedChart.data.datasets[0].data = sp;
       speedChart.update();
       document.getElementById('speedTitle').textContent =
-        'Walking speed on ' + dailyLabels[i] + ' (m/s)';
+        tr(T.speedOn, { day: dailyLabels[i] });
       showGait(i);
       // highlight the selected bar
       dailyChart.data.datasets[0].backgroundColor =

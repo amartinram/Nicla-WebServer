@@ -1,0 +1,1 @@
+<span class="langswitch">{% for code, name in languages %}{% if not loop.first %} · {% endif %}{% if code == lang %}<b>{{ name }}</b>{% else %}<a href="{{ lang_url(code) }}" hreflang="{{ code }}" lang="{{ code }}">{{ name }}</a>{% endif %}{% endfor %}</span>
